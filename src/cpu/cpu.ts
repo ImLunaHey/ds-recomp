@@ -132,7 +132,7 @@ export class Cpu {
     //   ARM7: 0x03FFFFFC (mirror of 0x0380FFFC = end of IWRAM-4)
     //   ARM9: DTCM_END - 4 (DTCM moves; track via Cp15)
     const ptrAddr = this.isArm9 && this.cp15
-      ? ((this.cp15.bus9.dtcmBase + this.cp15.bus9.dtcmMask + 1 - 4) >>> 0)
+      ? ((this.cp15.bus9.dtcmBase + this.cp15.bus9.dtcmVirtualSize - 4) >>> 0)
       : 0x03FFFFFC;
     const handler = this.bus.read32(ptrAddr) >>> 0;
 

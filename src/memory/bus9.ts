@@ -23,17 +23,20 @@ export class Bus9 {
   io: IoBus | null = null;
   vram: VramRouter | null = null;
   // ITCM/DTCM are ARM9-private — fast on-die SRAM. CP15 control regs
-  // pick the base + size; for now we keep the typical NDS defaults:
-  // ITCM is mapped at 0x00000000–0x00007FFF (mirror up to the configured
-  // size), DTCM is wherever the kernel programmed it.
+  // pick the base + virtual size; physical size is fixed (16 KB DTCM,
+  // 32 KB ITCM). When virtual > physical the TCM mirrors. Load-mode
+  // bits (CP15 ctrl bits 17 / 19) cause reads to bypass the TCM and
+  // fall through to whatever's below it, while writes still go to TCM.
   itcm = new Uint8Array(ITCM_SIZE);
   dtcm = new Uint8Array(DTCM_SIZE);
   itcmBase = 0x00000000;
-  itcmMask = ITCM_SIZE - 1;
+  itcmVirtualSize = ITCM_SIZE;
   itcmEnabled = true;
-  dtcmBase = 0x027C0000;   // Nintendo's typical placement at end of main RAM.
-  dtcmMask = DTCM_SIZE - 1;
+  itcmLoadMode = false;
+  dtcmBase = 0x027C0000;          // Nintendo's typical placement at end of main RAM.
+  dtcmVirtualSize = DTCM_SIZE;
   dtcmEnabled = true;
+  dtcmLoadMode = false;
 
   constructor(mem: SharedMemory) {
     this.mem = mem;
@@ -42,13 +45,22 @@ export class Bus9 {
   // Translate an address to (backing array, index). Returns null when
   // the access falls on a region we haven't implemented yet (IO ports
   // and VRAM bank routing) — the caller logs and returns 0.
-  private resolve(addr: number): { arr: Uint8Array; idx: number } | null {
+  // `forWrite` matters for the TCM load-mode bits — in load mode, reads
+  // from the TCM range fall through to the underlying memory but writes
+  // still land in the TCM.
+  private resolve(addr: number, forWrite: boolean): { arr: Uint8Array; idx: number } | null {
     addr = addr >>> 0;
-    if (this.dtcmEnabled && addr >= this.dtcmBase && addr < this.dtcmBase + DTCM_SIZE) {
-      return { arr: this.dtcm, idx: (addr - this.dtcmBase) & this.dtcmMask };
+    if (this.dtcmEnabled && addr >= this.dtcmBase && addr < this.dtcmBase + this.dtcmVirtualSize) {
+      if (!this.dtcmLoadMode || forWrite) {
+        return { arr: this.dtcm, idx: (addr - this.dtcmBase) & (DTCM_SIZE - 1) };
+      }
+      // Load mode + read: fall through to whatever maps this address
+      // below DTCM (typically main RAM).
     }
-    if (this.itcmEnabled && addr >= this.itcmBase && addr < this.itcmBase + ITCM_SIZE) {
-      return { arr: this.itcm, idx: (addr - this.itcmBase) & this.itcmMask };
+    if (this.itcmEnabled && addr >= this.itcmBase && addr < this.itcmBase + this.itcmVirtualSize) {
+      if (!this.itcmLoadMode || forWrite) {
+        return { arr: this.itcm, idx: (addr - this.itcmBase) & (ITCM_SIZE - 1) };
+      }
     }
     // BIOS region (low + high vectors mirror).
     if (addr < 0x4000) {
@@ -100,20 +112,20 @@ export class Bus9 {
 
   read8(addr: number): number {
     if (this.isIo(addr)) return this.io ? this.io.read8(addr) : 0;
-    const r = this.resolve(addr);
+    const r = this.resolve(addr, false);
     return r ? r.arr[r.idx] : 0;
   }
 
   read16(addr: number): number {
     if (this.isIo(addr)) return this.io ? this.io.read16(addr) : 0;
-    const r = this.resolve(addr);
+    const r = this.resolve(addr, false);
     if (!r) return 0;
     return r.arr[r.idx] | (r.arr[r.idx + 1] << 8);
   }
 
   read32(addr: number): number {
     if (this.isIo(addr)) return this.io ? this.io.read32(addr) : 0;
-    const r = this.resolve(addr);
+    const r = this.resolve(addr, false);
     if (!r) return 0;
     return (r.arr[r.idx] | (r.arr[r.idx + 1] << 8) |
             (r.arr[r.idx + 2] << 16) | (r.arr[r.idx + 3] << 24)) >>> 0;
@@ -121,13 +133,13 @@ export class Bus9 {
 
   write8(addr: number, v: number): void {
     if (this.isIo(addr)) { this.io?.write8(addr, v); return; }
-    const r = this.resolve(addr);
+    const r = this.resolve(addr, true);
     if (r) r.arr[r.idx] = v & 0xFF;
   }
 
   write16(addr: number, v: number): void {
     if (this.isIo(addr)) { this.io?.write16(addr, v); return; }
-    const r = this.resolve(addr);
+    const r = this.resolve(addr, true);
     if (!r) return;
     r.arr[r.idx]     = v & 0xFF;
     r.arr[r.idx + 1] = (v >> 8) & 0xFF;
@@ -135,7 +147,7 @@ export class Bus9 {
 
   write32(addr: number, v: number): void {
     if (this.isIo(addr)) { this.io?.write32(addr, v); return; }
-    const r = this.resolve(addr);
+    const r = this.resolve(addr, true);
     if (!r) return;
     r.arr[r.idx]     = v & 0xFF;
     r.arr[r.idx + 1] = (v >> 8) & 0xFF;

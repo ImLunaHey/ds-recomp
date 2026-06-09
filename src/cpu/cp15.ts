@@ -28,7 +28,7 @@ export class Cp15 {
   // the ADDRESS of the user IRQ handler ptr. DS games store that ptr at
   // DTCM_END - 4, so the literal must move whenever CP15 relocates DTCM.
   private updateIrqHandlerPtrLiteral(): void {
-    const dtcmEnd = (this.bus9.dtcmBase + (this.bus9.dtcmMask + 1)) >>> 0;
+    const dtcmEnd = (this.bus9.dtcmBase + this.bus9.dtcmVirtualSize) >>> 0;
     const ptrAddr = (dtcmEnd - 4) >>> 0;
     const bios = this.mem.biosArm9;
     bios[0x34] =  ptrAddr        & 0xFF;
@@ -43,24 +43,33 @@ export class Cp15 {
 
   write(opc1: number, crn: number, crm: number, opc2: number, value: number): void {
     this.regs.set(key(opc1, crn, crm, opc2), value >>> 0);
-    // TCM region/size — CRn=9, CRm=1, opc2=0 (DTCM) or 1 (ITCM).
+    // TCM region/size — CRn=9, CRm=1, opc2=0 (DTCM) or 1 (ITCM). Bits
+    // 31:12 = base address, bits 5:1 = size code (virtual size =
+    // 512 << code). Physical TCM size is fixed; when virtual > physical
+    // the bus mirrors via (addr & (physical-1)).
     if (crn === 9 && crm === 1) {
       const base = value & 0xFFFFF000;
       const sizeCode = (value >>> 1) & 0x1F;
-      const sizeBytes = 512 << sizeCode;
+      const virtSize = 512 << sizeCode;
       if (opc2 === 0) {
         this.bus9.dtcmBase = base >>> 0;
-        this.bus9.dtcmMask = (sizeBytes > DTCM_SIZE ? DTCM_SIZE : sizeBytes) - 1;
+        this.bus9.dtcmVirtualSize = virtSize;
         this.updateIrqHandlerPtrLiteral();
       } else if (opc2 === 1) {
-        this.bus9.itcmBase = base >>> 0;
-        this.bus9.itcmMask = (sizeBytes > ITCM_SIZE ? ITCM_SIZE : sizeBytes) - 1;
+        // ITCM ignores the base field on real hardware (it's always at
+        // 0x00000000 from the CPU's perspective), but the size code
+        // still matters.
+        this.bus9.itcmBase = 0;
+        this.bus9.itcmVirtualSize = virtSize;
       }
     }
-    // Control register CRn=1, CRm=0, opc2=0 — bit 16 enables DTCM, 17 enables ITCM.
+    // Control register CRn=1, CRm=0, opc2=0. Bit 16/18 enable, bit
+    // 17/19 = load mode for DTCM/ITCM respectively.
     if (crn === 1 && crm === 0 && opc2 === 0) {
-      this.bus9.dtcmEnabled = (value & (1 << 16)) !== 0;
-      this.bus9.itcmEnabled = (value & (1 << 18)) !== 0;
+      this.bus9.dtcmEnabled  = (value & (1 << 16)) !== 0;
+      this.bus9.dtcmLoadMode = (value & (1 << 17)) !== 0;
+      this.bus9.itcmEnabled  = (value & (1 << 18)) !== 0;
+      this.bus9.itcmLoadMode = (value & (1 << 19)) !== 0;
     }
   }
 }
