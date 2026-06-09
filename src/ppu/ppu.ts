@@ -9,6 +9,7 @@ import type { SharedMemory } from '../memory/shared';
 import { Irq, IRQ_VBLANK, IRQ_HBLANK, IRQ_VCOUNT } from '../io/irq';
 import { renderEngineA, renderEngineB } from './engine_a';
 import type { Dma } from '../io/dma';
+import type { Ipc } from '../io/ipc';
 
 export const DOTS_PER_LINE  = 355;
 export const LINES_PER_FRAME = 263;
@@ -23,6 +24,7 @@ export class Ppu {
   // DMAs are attached after construction (circular dep with Emulator).
   dma9: Dma | null = null;
   dma7: Dma | null = null;
+  ipc: Ipc | null = null;
 
   // DISPCNT for engines A and B (32-bit each).
   dispcntA = 0;
@@ -105,6 +107,18 @@ export class Ppu {
       renderEngineB(this);
       this.frameCount++;
       this.frameDone = true;
+      // Per GBATEK §"BIOS RAM Usage", the ARM7 BIOS / SDK runtime
+      // increments a frame counter at 0x027FFC3C every VBlank. Games
+      // poll this for "time is passing". Our HLE ARM7 doesn't always
+      // reach that user-handler code, so synthesize the increment.
+      const ram = this.mem.mainRam;
+      const off = 0x3FFC3C;            // 0x027FFC3C & 0x3FFFFF
+      let v = ram[off] | (ram[off + 1] << 8) | (ram[off + 2] << 16) | (ram[off + 3] << 24);
+      v = (v + 1) >>> 0;
+      ram[off]     = v        & 0xFF;
+      ram[off + 1] = (v >> 8) & 0xFF;
+      ram[off + 2] = (v >> 16) & 0xFF;
+      ram[off + 3] = (v >> 24) & 0xFF;
     } else if (this.vcount === 0) {
       this.dispstat &= ~0x01;         // VBlank ends
     }

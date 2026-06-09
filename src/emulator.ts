@@ -64,6 +64,7 @@ export class Emulator {
     this.dma7 = new Dma(this.bus7, this.irq7, false);
     this.ppu.dma9 = this.dma9;
     this.ppu.dma7 = this.dma7;
+    this.ppu.ipc = this.ipc;
     this.io9 = new IoBus(this.irq9, this.ppu, this.mem, this.ipc, this.cart, this.dma9, this.math, null,     true);
     this.io7 = new IoBus(this.irq7, this.ppu, this.mem, this.ipc, this.cart, this.dma7, null,      this.spi, false);
     this.bus9.attachIo(this.io9);

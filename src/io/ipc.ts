@@ -75,6 +75,11 @@ export class Ipc {
   recvNotEmptyIrqEn7 = false;
   error9 = false;
   error7 = false;
+  // Set true the moment EITHER CPU has ever performed a real FIFO
+  // SEND. Used by the PPU's VBlank heartbeat to decide whether to
+  // synthesize a beacon (only when the game itself hasn't established
+  // IPC FIFO traffic).
+  realFifoTrafficSeen = false;
 
   constructor(irq9: Irq, irq7: Irq) {
     this.irq9 = irq9;
@@ -152,9 +157,12 @@ export class Ipc {
   }
 
   // ---- FIFO SEND ----
-  writeSend(isArm9: boolean, value: number): void {
+  // `synthetic=true` means this is a PPU-injected heartbeat and must not
+  // flip the realFifoTrafficSeen flag.
+  writeSend(isArm9: boolean, value: number, synthetic = false): void {
     const enable = isArm9 ? this.enable9 : this.enable7;
     if (!enable) return;
+    if (!synthetic) this.realFifoTrafficSeen = true;
     const q = isArm9 ? this.q9to7 : this.q7to9;
     const remoteRecvNotEmptyEn = isArm9 ? this.recvNotEmptyIrqEn7 : this.recvNotEmptyIrqEn9;
     const remoteIrq = isArm9 ? this.irq7 : this.irq9;
