@@ -60,6 +60,22 @@ export function loadNdsRom(
   const arm9Bytes = bulkCopy(bus9, mem, header.arm9RamAddr, rom, header.arm9RomOffset, header.arm9Size);
   const arm7Bytes = bulkCopy(bus7, mem, header.arm7RamAddr, rom, header.arm7RomOffset, header.arm7Size);
 
+  // Per GBATEK § "BIOS RAM Usage", firmware copies a small metadata
+  // block to 0x027FFC00 before jumping to game code:
+  //   0x00..0x07: cart chip ID 1 + chip ID 2
+  //   0x08: cart header CRC
+  //   0x40: boot indicator (1 = normal cart, 2 = WiFi)
+  // We populate only those documented fields here. Bigger blocks like
+  // the full 0x170-byte cart header at 0x027FFE00 would land inside
+  // some games' ARM9 stack (e.g. Pokemon Platinum) and corrupt it.
+  const cartMirror = (0x027FFC00 & MAIN_RAM_MASK) >>> 0;
+  mem.mainRam[cartMirror]     = 0xC2; mem.mainRam[cartMirror + 1] = 0xF0;
+  mem.mainRam[cartMirror + 2] = 0x07; mem.mainRam[cartMirror + 3] = 0xFC;
+  const cartCrc = rom[0x15E] | (rom[0x15F] << 8);
+  mem.mainRam[cartMirror + 8] = cartCrc & 0xFF;
+  mem.mainRam[cartMirror + 9] = (cartCrc >> 8) & 0xFF;
+  mem.mainRam[(cartMirror + 0x40) >>> 0] = 0x01;
+
   return {
     arm9Entry: header.arm9EntryAddr,
     arm7Entry: header.arm7EntryAddr,
