@@ -28,8 +28,10 @@ export class IoBus {
   spi: Spi | null;         // ARM7 only — null on the ARM9 side
   bios: BiosHle | null = null;  // attached after Cpu construction
   isArm9: boolean;
-  // POSTFLG — set to 1 once the boot completes. Some games poll this.
-  postflg = 0;
+  // POSTFLG (0x04000300) bit 0 = "boot completed". Per GBATEK: "Games
+  // require it set to function." Real BIOS sets it before jumping to
+  // game code. We HLE the boot handoff so initialize it to 1.
+  postflg = 1;
   // HALTCNT — write 0x80 puts the CPU into halt.
   haltcnt = 0;
   // Captured KEYINPUT — bits LOW = pressed. Default all up = 0x3FF.

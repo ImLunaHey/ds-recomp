@@ -165,14 +165,12 @@ export class Spi {
   private tickTouchscreen(byte: number): number {
     // The TSC2046-like control byte sent first carries the channel in
     // bits 4..6. We return a 12-bit "no touch" reading split across
-    // two response bytes (high byte after the control byte, low byte
-    // after a dummy). Returning 0x000 means the screen wasn't pressed.
+    // two response bytes. Returning 0 means the screen wasn't pressed.
     if (this.bytePos === 0) {
       this.tscChannel = (byte >> 4) & 0x7;
       return 0x00;
     }
     void this.tscChannel;
-    // Subsequent bytes return the two halves of a 12-bit zero reading.
     return 0x00;
   }
 

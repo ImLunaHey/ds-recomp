@@ -59,6 +59,7 @@ export function loadNdsRom(
 ): LoadResult {
   const arm9Bytes = bulkCopy(bus9, mem, header.arm9RamAddr, rom, header.arm9RomOffset, header.arm9Size);
   const arm7Bytes = bulkCopy(bus7, mem, header.arm7RamAddr, rom, header.arm7RomOffset, header.arm7Size);
+
   return {
     arm9Entry: header.arm9EntryAddr,
     arm7Entry: header.arm7EntryAddr,
