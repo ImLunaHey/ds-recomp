@@ -95,6 +95,15 @@ export class Bus7 {
 
   write32(addr: number, v: number): void {
     if (this.isIo(addr)) { this.io?.write32(addr, v); return; }
+    // Nintendo SDK shared-OS-init-flags word at 0x027FFF8C. Real DS BIOS
+    // sets some of these bits during the boot stub that runs before
+    // ARM7's binary takes over (touchscreen ADC + RTC subsystem init).
+    // We HLE the BIOS to bare minimum and don't run those subsystems,
+    // so the corresponding bits are never set and games (NSMB,
+    // Nintendogs, …) deadlock polling for them. Force-OR the missing
+    // bit into every write so the boot-info word matches what BIOS
+    // would have produced.
+    if (addr === 0x027FFF8C) v |= 0x100;
     const r = this.resolve(addr);
     if (!r) return;
     r.arr[r.idx]     = v & 0xFF;
