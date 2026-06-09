@@ -163,14 +163,20 @@ export class Spi {
   }
 
   private tickTouchscreen(byte: number): number {
-    // The TSC2046-like control byte sent first carries the channel in
-    // bits 4..6. We return a 12-bit "no touch" reading split across
-    // two response bytes. Returning 0 means the screen wasn't pressed.
+    // The TSC2046-like control byte arrives first; bits 4..6 select
+    // the channel. The response is a one-bit dummy zero, then 12 bits
+    // of data MSB-first, then trailing zeros, split across the next
+    // two byte exchanges.
+    // Per GBATEK channel 1 = Y (released value = 0xFFF), channel 5 = X
+    // (released value = 0x000). Returning these tells the SDK driver
+    // "pen not down".
     if (this.bytePos === 0) {
       this.tscChannel = (byte >> 4) & 0x7;
       return 0x00;
     }
-    void this.tscChannel;
+    const value12 = this.tscChannel === 1 ? 0xFFF : 0x000;
+    if (this.bytePos === 1) return (value12 >> 5) & 0x7F;
+    if (this.bytePos === 2) return (value12 & 0x1F) << 3;
     return 0x00;
   }
 
