@@ -722,10 +722,9 @@ function armBlockTransfer(cpu: Cpu, instr: number): void {
   //   - count == 1 (only base in list): writeback wins → base = writeback addr
   //   - count > 1, base is the highest-numbered register in list:
   //     loaded value survives → writeback suppressed
-  //   - count > 1, base is NOT the highest: writeback wins (overwrites
-  //     the value that was loaded into base earlier in the loop)
-  // STM uses a different rule (first-vs-not-first stored value), handled
-  // in the store branch of armBlockTransfer.
+  //   - count > 1, base is NOT the highest: writeback wins
+  // STM uses a different rule (first-vs-not-first), handled in the store
+  // branch of armBlockTransfer.
   let suppressWriteback = false;
   if (W && L && (list & (1 << rn))) {
     if (count > 1) {

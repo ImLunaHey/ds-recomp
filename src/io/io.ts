@@ -14,6 +14,7 @@ import type { Ipc } from './ipc';
 import type { Cart } from '../cart/cart';
 import type { Dma } from './dma';
 import type { DsMath } from './ds_math';
+import type { Spi } from './spi';
 
 export class IoBus {
   irq: Irq;
@@ -23,6 +24,7 @@ export class IoBus {
   cart: Cart;
   dma: Dma;
   math: DsMath | null;     // ARM9 only — null on the ARM7 side
+  spi: Spi | null;         // ARM7 only — null on the ARM9 side
   isArm9: boolean;
   // POSTFLG — set to 1 once the boot completes. Some games poll this.
   postflg = 0;
@@ -32,7 +34,7 @@ export class IoBus {
   keyinput = 0x03FF;
   extKeyinput = 0x007F;   // X, Y, lid open (low = active)
 
-  constructor(irq: Irq, ppu: Ppu, mem: SharedMemory, ipc: Ipc, cart: Cart, dma: Dma, math: DsMath | null, isArm9: boolean) {
+  constructor(irq: Irq, ppu: Ppu, mem: SharedMemory, ipc: Ipc, cart: Cart, dma: Dma, math: DsMath | null, spi: Spi | null, isArm9: boolean) {
     this.irq = irq;
     this.ppu = ppu;
     this.mem = mem;
@@ -40,6 +42,7 @@ export class IoBus {
     this.cart = cart;
     this.dma = dma;
     this.math = math;
+    this.spi = spi;
     this.isArm9 = isArm9;
   }
 
@@ -165,6 +168,11 @@ export class IoBus {
       case 0x04000216: return (this.irq.if_ >>> 16) & 0xFF;
       case 0x04000217: return (this.irq.if_ >>> 24) & 0xFF;
       case 0x04000300: return this.postflg & 0xFF;
+      // SPI bus (ARM7 only).
+      case 0x040001C0: return this.spi ? this.spi.readCnt() & 0xFF       : 0;
+      case 0x040001C1: return this.spi ? (this.spi.readCnt() >>> 8) & 0xFF : 0;
+      case 0x040001C2: return this.spi ? this.spi.readData() & 0xFF     : 0;
+      case 0x040001C3: return 0;
     }
     return 0;
   }
@@ -313,6 +321,12 @@ export class IoBus {
       case 0x04000217: this.irq.ackIf((v & 0xFF) << 24); return;
       case 0x04000300: this.postflg = v & 0xFF; return;
       case 0x04000301: this.haltcnt = v & 0xFF; return;
+      // SPI bus (ARM7 only). CNT is two bytes assembled, DATA is one
+      // byte that triggers a transfer.
+      case 0x040001C0: if (this.spi) { const c = this.spi.readCnt(); this.spi.writeCnt((c & 0xFF00) | (v & 0xFF)); } return;
+      case 0x040001C1: if (this.spi) { const c = this.spi.readCnt(); this.spi.writeCnt((c & 0x00FF) | ((v & 0xFF) << 8)); } return;
+      case 0x040001C2: if (this.spi) this.spi.writeData(v & 0xFF); return;
+      case 0x040001C3: return;
     }
   }
 }

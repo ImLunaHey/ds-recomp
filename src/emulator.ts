@@ -18,6 +18,7 @@ import { IoBus } from './io/io';
 import { Ipc } from './io/ipc';
 import { Dma } from './io/dma';
 import { DsMath } from './io/ds_math';
+import { Spi } from './io/spi';
 import { Ppu, DOTS_PER_LINE, LINES_PER_FRAME } from './ppu/ppu';
 import { BiosHle } from './bios/hle';
 import { installBiosStubs } from './bios/stub';
@@ -38,6 +39,7 @@ export class Emulator {
   dma9: Dma;
   dma7: Dma;
   math = new DsMath();      // ARM9 only — ARM7 sees these registers as 0
+  spi = new Spi();          // ARM7 only — ARM9 sees SPI registers as 0
   io9: IoBus;
   io7: IoBus;
   cpu9: Cpu;
@@ -62,8 +64,8 @@ export class Emulator {
     this.dma7 = new Dma(this.bus7, this.irq7, false);
     this.ppu.dma9 = this.dma9;
     this.ppu.dma7 = this.dma7;
-    this.io9 = new IoBus(this.irq9, this.ppu, this.mem, this.ipc, this.cart, this.dma9, this.math, true);
-    this.io7 = new IoBus(this.irq7, this.ppu, this.mem, this.ipc, this.cart, this.dma7, null, false);
+    this.io9 = new IoBus(this.irq9, this.ppu, this.mem, this.ipc, this.cart, this.dma9, this.math, null,     true);
+    this.io7 = new IoBus(this.irq7, this.ppu, this.mem, this.ipc, this.cart, this.dma7, null,      this.spi, false);
     this.bus9.attachIo(this.io9);
     this.bus7.attachIo(this.io7);
     this.cpu9 = new Cpu(this.bus9, true);
