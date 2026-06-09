@@ -4,7 +4,6 @@ import { Emulator } from '../emulator';
 
 const KEY_DOWN  = 1 << 7;
 const KEY_A     = 1 << 0;
-const KEY_B     = 1 << 1;
 
 const rom = readFileSync('public/rockwrestler.nds');
 const emu = new Emulator();

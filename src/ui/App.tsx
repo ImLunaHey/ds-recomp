@@ -286,12 +286,11 @@ export function App() {
     if (!running) return;
     let lastFpsCheck = performance.now();
     let framesAtLastCheck = emu.ppu.frameCount;
-    let frameAccum = 0, arm9Accum = 0, arm7Accum = 0;
+    let arm9Accum = 0, arm7Accum = 0;
 
     const loop = () => {
       try {
         const r = emu.runFrame();
-        frameAccum++;
         arm9Accum += r.arm9;
         arm7Accum += r.arm7;
         paintCanvas(topCanvasRef.current, emu.ppu.fbA);
@@ -305,7 +304,7 @@ export function App() {
           });
           lastFpsCheck = now;
           framesAtLastCheck = emu.ppu.frameCount;
-          arm9Accum = 0; arm7Accum = 0; frameAccum = 0;
+          arm9Accum = 0; arm7Accum = 0;
         }
         rafRef.current = requestAnimationFrame(loop);
       } catch (e) {

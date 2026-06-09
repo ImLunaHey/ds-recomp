@@ -8,11 +8,10 @@
 
 import { SharedMemory } from './shared';
 import {
-  MAIN_RAM_BASE, MAIN_RAM_MASK,
-  SHARED_WRAM_BASE, SHARED_WRAM_MASK,
+  MAIN_RAM_MASK,
+  SHARED_WRAM_MASK,
   PRAM_BASE, PRAM_SIZE,
   OAM_BASE, OAM_SIZE,
-  VRAM_BASE, VRAM_TOTAL_SIZE,
   ITCM_SIZE, DTCM_SIZE,
 } from './regions';
 import type { IoBus } from '../io/io';

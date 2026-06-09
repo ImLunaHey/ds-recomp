@@ -8,7 +8,6 @@
 // bus so addresses move when the kernel re-maps them.
 
 import type { Bus9 } from '../memory/bus9';
-import { ITCM_SIZE, DTCM_SIZE } from '../memory/regions';
 import type { SharedMemory } from '../memory/shared';
 
 export class Cp15 {
