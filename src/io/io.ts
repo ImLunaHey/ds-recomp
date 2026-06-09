@@ -233,6 +233,24 @@ export class IoBus {
       arr[bg] = ((arr[bg] & ~(0xFF << shift)) | ((v & 0xFF) << shift)) & 0xFFFF;
       return;
     }
+    // MOSAIC registers (engine A/B). 16-bit; layout is 4 nibbles —
+    // BG H, BG V, OBJ H, OBJ V (each "size" = N - 1).
+    if (addr === 0x0400004C) {
+      this.ppu.mosaicA = (this.ppu.mosaicA & 0xFF00) | (v & 0xFF);
+      return;
+    }
+    if (addr === 0x0400004D) {
+      this.ppu.mosaicA = (this.ppu.mosaicA & 0x00FF) | ((v & 0xFF) << 8);
+      return;
+    }
+    if (addr === 0x0400104C) {
+      this.ppu.mosaicB = (this.ppu.mosaicB & 0xFF00) | (v & 0xFF);
+      return;
+    }
+    if (addr === 0x0400104D) {
+      this.ppu.mosaicB = (this.ppu.mosaicB & 0x00FF) | ((v & 0xFF) << 8);
+      return;
+    }
     // Engine B BG regs.
     if (addr >= 0x04001008 && addr < 0x04001010) {
       const bg = (addr - 0x04001008) >>> 1;

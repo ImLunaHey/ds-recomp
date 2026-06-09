@@ -30,16 +30,20 @@ export interface ObjSample {
 // Render all sprites for one scanline into `out`, indexed 0..255.
 // `pramBase` is 0x200 for engine A / 0x600 for engine B (where OBJ
 // palette starts). `vramObjBase` is the start of the OBJ VRAM window
-// within shared.vram.
+// within shared.vram. `mosaicReg` is the engine's MOSAIC register
+// value (16 bits): OBJ H size in bits 8-11, OBJ V size in bits 12-15.
 export function renderObjScanline(
   mem: SharedMemory,
   oamBase: number,           // 0 for engine A, 0x400 for engine B
   pramBase: number,          // 0x200 (engine A) or 0x600 (engine B)
   vramObjBase: number,       // 0x06400000 area as flat vram[] offset
   dispcnt: number,
+  mosaicReg: number,
   y: number,
   out: ObjSample[],
 ): void {
+  const objMosaicH = ((mosaicReg >>>  8) & 0xF) + 1;       // pixels per H block
+  const objMosaicV = ((mosaicReg >>> 12) & 0xF) + 1;       // pixels per V block
   const oam = mem.oam;
   const vram = mem.vram;
   const pram = mem.pram;
@@ -62,8 +66,7 @@ export function renderObjScanline(
     if (disabled) continue;
     const mode      = (attr0 >>> 10) & 0x3;
     if (mode === 3) continue;                       // bitmap/forbidden
-    const mosaic    = (attr0 & 0x1000) !== 0;       // TODO: respect MOSAIC
-    void mosaic;
+    const mosaic    = (attr0 & 0x1000) !== 0;
     const is8bpp    = (attr0 & 0x2000) !== 0;
     const shape     = (attr0 >>> 14) & 0x3;
     const size      = (attr1 >>> 14) & 0x3;
@@ -75,7 +78,12 @@ export function renderObjScanline(
     const doubleSize = rotscale && (attr0 & 0x0200) !== 0;
     const boundsH = doubleSize ? h * 2 : h;
     const boundsW = doubleSize ? w * 2 : w;
-    const lineY = (y - spriteY) & 0xFF;
+    void boundsW;
+    // OBJ mosaic snaps the source scanline to the start of the
+    // mosaic-V block. So at any scanline within [block, block + Mv),
+    // the sprite shows what it would have shown at `block`.
+    const sourceY = mosaic ? (y - (y % objMosaicV)) : y;
+    const lineY = (sourceY - spriteY) & 0xFF;
     if (lineY >= boundsH) continue;
 
     // X with 9-bit sign-extension.
@@ -101,7 +109,12 @@ export function renderObjScanline(
     for (let px = 0; px < w; px++) {
       const screenX = (spriteX + px) | 0;
       if (screenX < 0 || screenX >= 256) continue;
-      const srcX = hflip ? (w - 1 - px) : px;
+      // OBJ mosaic H: snap screen X to start of block, then derive
+      // the pixel index within the sprite from that.
+      const sourceScreenX = mosaic ? (screenX - (screenX % objMosaicH)) : screenX;
+      const spriteRelX = sourceScreenX - spriteX;
+      if (spriteRelX < 0 || spriteRelX >= w) continue;
+      const srcX = hflip ? (w - 1 - spriteRelX) : spriteRelX;
       const tileCol = srcX >>> 3;
       const subCol  = srcX & 7;
 
@@ -168,9 +181,7 @@ export function renderObjScanline(
 }
 
 export function newObjLine(): ObjSample[] {
-  const a = new Array<ObjSample>(256);
-  for (let i = 0; i < 256; i++) a[i] = { color: 0, priority: 4, semitransparent: false };
-  return a;
+  return Array.from({ length: 256 }, () => ({ color: 0, priority: 4, semitransparent: false }));
 }
 
 export function clearObjLine(line: ObjSample[]): void {

@@ -41,6 +41,12 @@ export class Ppu {
   // DISPCNT display-mode 2 is selected.
   vramcnt = new Uint8Array(9);
 
+  // MOSAIC register (engine A at 0x0400004C, engine B at 0x0400104C).
+  // 4 nibbles: BG H size, BG V size, OBJ H size, OBJ V size (each "size"
+  // is encoded as N-1 where N is the actual block width / height).
+  mosaicA = 0;
+  mosaicB = 0;
+
   // ARM7-side VRAMSTAT: bit 0 = bank C in ARM7 mode, bit 1 = bank D.
   vramStat(): number {
     let v = 0;

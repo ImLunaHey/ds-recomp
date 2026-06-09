@@ -5,7 +5,7 @@
 import { Ppu, SCREEN_W, SCREEN_H } from './ppu';
 import { renderTextScanline } from './text_bg';
 import { renderBitmapScanline } from './bitmap_bg';
-import { renderObjScanline, newObjLine, clearObjLine, type ObjSample } from './sprites';
+import { renderObjScanline, newObjLine, clearObjLine } from './sprites';
 
 const ENGINE_A_PRAM = 0;
 const ENGINE_B_PRAM = 0x400;
@@ -132,8 +132,9 @@ function renderEngine(ppu: Ppu, dispcnt: number, fb: Uint8ClampedArray, isEngine
 
     // OBJ layer.
     if (objEnabled) {
+      const mosaicReg = isEngineA ? ppu.mosaicA : ppu.mosaicB;
       renderObjScanline(ppu.mem, oamBase, objPramBase, objVramBase,
-                       dispcnt, y, objLineCache);
+                       dispcnt, mosaicReg, y, objLineCache);
     }
 
     // Per-pixel priority compositing. Each BG has a priority from its
