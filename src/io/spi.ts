@@ -41,7 +41,7 @@ export class Spi {
   firmware: Uint8Array;
 
   constructor() {
-    this.firmware = new Uint8Array(0x40000);
+    this.firmware = new Uint8Array(0x80000);   // 512 KB to match retail DS firmware
     this.initFirmware();
   }
 
@@ -49,8 +49,28 @@ export class Spi {
   // §"DS Firmware User Settings" describes the 0x100-byte layout
   // at offset 0x3FE00 (latest user settings slot).
   private initFirmware(): void {
-    const off = 0x3FE00;
     const f = this.firmware;
+    // 0x00-0x1F: firmware header. Per real DS firmware layout:
+    //   0x00-0x01: ARM9 boot code GUI offset (16-bit, value × 8 = ROM offset)
+    //   0x02-0x03: ARM7 boot code GUI offset
+    //   0x04-0x05: GUI/WiFi panic offset (decompression src in ROM)
+    //   0x06-0x07: WiFi data offset
+    //   0x08-0x09: ARM9 boot RAM dest >> 8 (typ. 0x3FFF8 / 0x100 = 0x3FF8)
+    //   0x0A-0x0B: ARM7 boot RAM dest >> 8
+    //   0x0C: type (= 0xFF for retail)
+    //   0x0D: bootcode CRC8
+    //   0x0E-0x0F: timestamp
+    //   0x14-0x1F: ARM9 GUI/menu CRC, ARM7 GUI/menu CRC etc.
+    // Many games verify these CRCs match; without real firmware bytes
+    // we just stamp plausible non-zero values so the verifier passes.
+    f[0x00] = 0xFF; f[0x01] = 0x00;    // version: anything non-zero
+    f[0x14] = 0x00; f[0x15] = 0x00;    // ARM9 GUI CRC — leave zero, may fail verify
+    // 0x20-0x3C is "data offset 1" region with WiFi calibration headers
+    // and various CRC values. Stamping the area with 0xFF prevents games
+    // from interpreting it as valid pre-existing config (= no config).
+    for (let i = 0x20; i < 0x40; i++) f[i] = 0xFF;
+    // User-settings block at the end of firmware.
+    const off = 0x3FE00;
 
     // Header marker (version, etc.) — anything plausibly non-zero.
     f[off + 0x00] = 5;          // version
