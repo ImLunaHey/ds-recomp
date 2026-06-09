@@ -63,10 +63,18 @@ export class Bus9 {
     if ((addr >>> 24) === 0x02 || (addr >>> 24) === 0x01) {
       return { arr: this.mem.mainRam, idx: addr & MAIN_RAM_MASK };
     }
-    // Shared WRAM block — for now route all of 0x03xxxxxx here ignoring
-    // the WRAMCNT split. We'll fix routing when WRAMCNT lands.
+    // Shared WRAM block. WRAMCNT (ARM9-only writable) splits the 32 KB
+    // shared block between ARM9 and ARM7:
+    //   00: ARM9 sees all 32 KB
+    //   01: ARM9 sees lower 16 KB (offset 0)
+    //   10: ARM9 sees upper 16 KB (offset 0x4000)
+    //   11: ARM9 sees nothing (open bus / zero)
     if ((addr >>> 24) === 0x03) {
-      return { arr: this.mem.sharedWram, idx: addr & SHARED_WRAM_MASK };
+      const wcnt = this.mem.wramcnt & 0x3;
+      if (wcnt === 0) return { arr: this.mem.sharedWram, idx: addr & SHARED_WRAM_MASK };
+      if (wcnt === 1) return { arr: this.mem.sharedWram, idx: addr & 0x3FFF };          // low half
+      if (wcnt === 2) return { arr: this.mem.sharedWram, idx: 0x4000 + (addr & 0x3FFF) }; // high half
+      return null;       // wcnt === 3 → unmapped on ARM9
     }
     if (addr >= PRAM_BASE && addr < PRAM_BASE + PRAM_SIZE) {
       return { arr: this.mem.pram, idx: addr - PRAM_BASE };

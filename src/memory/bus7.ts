@@ -30,13 +30,20 @@ export class Bus7 {
       return { arr: this.mem.mainRam, idx: addr & MAIN_RAM_MASK };
     }
     if ((addr >>> 24) === 0x03) {
-      // The shared WRAM block is split via WRAMCNT — but the ARM7 also
-      // has its 64 KB IWRAM aliased into 0x03800000+. Pick by address:
-      // anything from 0x03800000+ is private IWRAM; the rest of 0x03 is
-      // the shared block.
+      // 0x03800000+ is always ARM7-private IWRAM (64 KB).
       if (addr >= 0x03800000) {
         return { arr: this.mem.arm7Iwram, idx: addr & ARM7_IWRAM_MASK };
       }
+      // 0x03000000-0x037FFFFF is shared WRAM, gated by WRAMCNT. The
+      // four ARM7-visible mappings (complementary to ARM9's):
+      //   00: ARM7 sees nothing here — IWRAM mirror per GBATEK
+      //   01: ARM7 sees upper 16 KB (offset 0x4000)
+      //   10: ARM7 sees lower 16 KB (offset 0)
+      //   11: ARM7 sees all 32 KB
+      const wcnt = this.mem.wramcnt & 0x3;
+      if (wcnt === 0) return { arr: this.mem.arm7Iwram, idx: addr & ARM7_IWRAM_MASK };
+      if (wcnt === 1) return { arr: this.mem.sharedWram, idx: 0x4000 + (addr & 0x3FFF) };
+      if (wcnt === 2) return { arr: this.mem.sharedWram, idx: addr & 0x3FFF };
       return { arr: this.mem.sharedWram, idx: addr & SHARED_WRAM_MASK };
     }
     return null;
