@@ -35,6 +35,15 @@ export class BiosHle {
     // both ARM (24-bit) and THUMB (8-bit) — we mask to 0xFF for both.
     const swi = (comment & 0xFF) >>> 0;
 
+    // Decompression / utility SWIs that both CPUs implement identically.
+    switch (swi) {
+      case 0x10: return this.bitUnPack(s.r[0], s.r[1], s.r[2]);
+      case 0x11: return this.lz77UnComp(s.r[0], s.r[1], false);
+      case 0x12: return this.lz77UnComp(s.r[0], s.r[1], true);
+      case 0x13: return this.huffUnComp(s.r[0], s.r[1]);
+      case 0x14: return this.rlUnComp(s.r[0], s.r[1], false);
+      case 0x15: return this.rlUnComp(s.r[0], s.r[1], true);
+    }
     if (this.cpu.isArm9) {
       switch (swi) {
         case 0x04: return this.intrWait(s.r[0], s.r[1]);
@@ -45,6 +54,7 @@ export class BiosHle {
         case 0x0B: cpuSet(this.cpu, s.r[0], s.r[1], s.r[2]); return true;
         case 0x0C: cpuFastSet(this.cpu, s.r[0], s.r[1], s.r[2]); return true;
         case 0x0D: { s.r[0] = Math.floor(Math.sqrt(s.r[0] >>> 0)); return true; }
+        case 0x0E: return this.getCRC16(s);
       }
     } else {
       switch (swi) {
@@ -103,6 +113,163 @@ export class BiosHle {
       }
     }
     s.r[0] = crc & 0xFFFF;
+    return true;
+  }
+
+  // BIOS LZ77UnComp (SWI 0x11 = WRAM target / 0x12 = VRAM target). The
+  // 1-byte source-data flag distinguishes 8-bit vs 16-bit dest stride.
+  // Source: header u32 (low 8 = compression type 1, high 24 = decompressed
+  // length), then a stream of: 1 flag byte where each bit (MSB-first)
+  // indicates whether the next chunk is a literal byte (0) or a 2-byte
+  // backref (1, encoded as length-3 in high nibble + disp-1 in low 12).
+  private lz77UnComp(srcAddr: number, dstAddr: number, vramTarget: boolean): boolean {
+    const bus = this.cpu.bus;
+    const header = bus.read32(srcAddr);
+    const size = header >>> 8;
+    let src = srcAddr + 4;
+    let dst = dstAddr;
+    let written = 0;
+    const writeByte = (v: number): void => {
+      if (vramTarget) {
+        const cur = bus.read16(dst & ~1);
+        const shift = (dst & 1) * 8;
+        const masked = (cur & ~(0xFF << shift)) | ((v & 0xFF) << shift);
+        bus.write16(dst & ~1, masked & 0xFFFF);
+      } else {
+        bus.write8(dst, v & 0xFF);
+      }
+      dst++; written++;
+    };
+    while (written < size) {
+      const flags = bus.read8(src++);
+      for (let bit = 7; bit >= 0 && written < size; bit--) {
+        if ((flags >> bit) & 1) {
+          const hi = bus.read8(src++);
+          const lo = bus.read8(src++);
+          const len = ((hi >> 4) & 0xF) + 3;
+          const disp = ((hi & 0xF) << 8) | lo;
+          for (let i = 0; i < len && written < size; i++) {
+            writeByte(bus.read8(dst - disp - 1));
+          }
+        } else {
+          writeByte(bus.read8(src++));
+        }
+      }
+    }
+    return true;
+  }
+
+  // BIOS RLUnComp (SWI 0x14/0x15). Header same as LZ77. Stream is a flag
+  // byte: MSB = 1 → next byte repeated (low 7 bits + 3) times; MSB = 0 →
+  // low 7 bits + 1 literal bytes follow.
+  private rlUnComp(srcAddr: number, dstAddr: number, vramTarget: boolean): boolean {
+    const bus = this.cpu.bus;
+    const header = bus.read32(srcAddr);
+    const size = header >>> 8;
+    let src = srcAddr + 4;
+    let dst = dstAddr;
+    let written = 0;
+    const writeByte = (v: number): void => {
+      if (vramTarget) {
+        const cur = bus.read16(dst & ~1);
+        const shift = (dst & 1) * 8;
+        bus.write16(dst & ~1, ((cur & ~(0xFF << shift)) | ((v & 0xFF) << shift)) & 0xFFFF);
+      } else {
+        bus.write8(dst, v & 0xFF);
+      }
+      dst++; written++;
+    };
+    while (written < size) {
+      const flag = bus.read8(src++);
+      if (flag & 0x80) {
+        const data = bus.read8(src++);
+        const count = (flag & 0x7F) + 3;
+        for (let i = 0; i < count && written < size; i++) writeByte(data);
+      } else {
+        const count = (flag & 0x7F) + 1;
+        for (let i = 0; i < count && written < size; i++) writeByte(bus.read8(src++));
+      }
+    }
+    return true;
+  }
+
+  // BIOS HuffUnComp (SWI 0x13). Source layout:
+  //   u32 header  (bits 0-3 = symbol bit-width 4 or 8, bits 8-31 = size)
+  //   u8  tree size in 16-byte halves, tree nodes follow.
+  //   stream of bits, MSB-first within 32-bit words, traversing tree
+  // We bail to a slow but correct walking implementation. Few games use
+  // 4-bit Huffman, and the 8-bit form is mostly identical.
+  private huffUnComp(srcAddr: number, dstAddr: number): boolean {
+    const bus = this.cpu.bus;
+    const header = bus.read32(srcAddr);
+    const symBits = header & 0xF;            // 4 or 8
+    const size = header >>> 8;
+    const treeSizeBytes = (bus.read8(srcAddr + 4) + 1) * 2;
+    const treeStart = srcAddr + 5;
+    const streamStart = srcAddr + 4 + treeSizeBytes;
+    let dst = dstAddr;
+    let written = 0;
+    let buf = 0, bufBits = 0;
+    let streamPtr = streamStart;
+    const fillWord = (): void => {
+      buf = bus.read32(streamPtr); streamPtr += 4; bufBits = 32;
+    };
+    let outShift = 0;
+    let outByte = 0;
+    const emitNibble = (v: number): void => {
+      outByte |= (v & ((1 << symBits) - 1)) << outShift;
+      outShift += symBits;
+      if (outShift === 8) {
+        bus.write8(dst++, outByte & 0xFF);
+        outByte = 0; outShift = 0; written++;
+      }
+    };
+    while (written < size) {
+      if (bufBits === 0) fillWord();
+      let nodeOff = 0;       // offset within tree from treeStart-1 (root word)
+      while (true) {
+        if (bufBits === 0) fillWord();
+        const bit = (buf >>> 31) & 1;
+        buf <<= 1; bufBits--;
+        const node = bus.read8(treeStart + nodeOff);
+        const isLeaf = (node & (bit ? 0x40 : 0x80)) !== 0;
+        const childBase = ((nodeOff >> 1) + (node & 0x3F) + 1) * 2;
+        nodeOff = childBase + bit;
+        if (isLeaf) {
+          emitNibble(bus.read8(treeStart + nodeOff));
+          break;
+        }
+      }
+    }
+    return true;
+  }
+
+  // BIOS BitUnPack (SWI 0x10). r0=src ptr, r1=dst ptr, r2=param block ptr.
+  // Param block: u16 srcLen, u8 srcWidth, u8 dstWidth, u32 dataOffset+zeroFlag.
+  private bitUnPack(srcAddr: number, dstAddr: number, paramAddr: number): boolean {
+    const bus = this.cpu.bus;
+    const srcLen     = bus.read16(paramAddr);
+    const srcWidth   = bus.read8 (paramAddr + 2);
+    const dstWidth   = bus.read8 (paramAddr + 3);
+    const offsetInfo = bus.read32(paramAddr + 4);
+    const dataOffset = offsetInfo & 0x7FFFFFFF;
+    const zeroFlag   = (offsetInfo >>> 31) & 1;
+    const srcMask = (1 << srcWidth) - 1;
+    let dstAcc = 0, dstBits = 0, dstPtr = dstAddr;
+    for (let i = 0; i < srcLen; i++) {
+      const byte = bus.read8(srcAddr + i);
+      for (let b = 0; b < 8; b += srcWidth) {
+        let val = (byte >> b) & srcMask;
+        if (val !== 0 || zeroFlag) val = (val + dataOffset) & ((1 << dstWidth) - 1);
+        dstAcc |= val << dstBits;
+        dstBits += dstWidth;
+        if (dstBits >= 32) {
+          bus.write32(dstPtr, dstAcc >>> 0);
+          dstPtr += 4; dstAcc = 0; dstBits = 0;
+        }
+      }
+    }
+    if (dstBits > 0) bus.write32(dstPtr, dstAcc >>> 0);
     return true;
   }
 
