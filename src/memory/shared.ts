@@ -30,10 +30,17 @@ export class SharedMemory {
 
   // WRAMCNT controls how the 32 KB shared block is split. Values:
   //   0 → all 32 KB to ARM9, ARM7 sees its IWRAM mirror at 0x03000000
-  //   1 → first 16 KB to ARM9, second 16 KB to ARM7
-  //   2 → first 16 KB to ARM7, second 16 KB to ARM9
+  //   1 → 2nd half (upper 16 KB) to ARM9, 1st half to ARM7
+  //   2 → 1st half (lower 16 KB) to ARM9, 2nd half to ARM7
   //   3 → all 32 KB to ARM7, ARM9 sees zeros at 0x03000000
-  wramcnt = 0;
+  //
+  // After reset, real hardware has WRAMCNT=0. The ARM9 BIOS then sets
+  // it to 3 (all-to-ARM7) before signaling ARM7 to take over. We run
+  // both CPUs concurrently and have no BIOS handoff, so initializing
+  // to 3 here matches what ARM9 would have done — and Pokemon
+  // Platinum's ARM7 autoload writes 0x037F8000+ expecting shared
+  // WRAM to be mapped there.
+  wramcnt = 3;
 
   // Tiny BIOS regions, one per CPU. Reads from 0x00000000..0x00003FFF
   // (and 0xFFFF0000..0xFFFF3FFF on ARM9) hit these — we pre-load a
