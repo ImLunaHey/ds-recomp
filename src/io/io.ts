@@ -13,6 +13,7 @@ import type { SharedMemory } from '../memory/shared';
 import type { Ipc } from './ipc';
 import type { Cart } from '../cart/cart';
 import type { Dma } from './dma';
+import type { DsMath } from './ds_math';
 
 export class IoBus {
   irq: Irq;
@@ -21,6 +22,7 @@ export class IoBus {
   ipc: Ipc;
   cart: Cart;
   dma: Dma;
+  math: DsMath | null;     // ARM9 only — null on the ARM7 side
   isArm9: boolean;
   // POSTFLG — set to 1 once the boot completes. Some games poll this.
   postflg = 0;
@@ -30,13 +32,14 @@ export class IoBus {
   keyinput = 0x03FF;
   extKeyinput = 0x007F;   // X, Y, lid open (low = active)
 
-  constructor(irq: Irq, ppu: Ppu, mem: SharedMemory, ipc: Ipc, cart: Cart, dma: Dma, isArm9: boolean) {
+  constructor(irq: Irq, ppu: Ppu, mem: SharedMemory, ipc: Ipc, cart: Cart, dma: Dma, math: DsMath | null, isArm9: boolean) {
     this.irq = irq;
     this.ppu = ppu;
     this.mem = mem;
     this.ipc = ipc;
     this.cart = cart;
     this.dma = dma;
+    this.math = math;
     this.isArm9 = isArm9;
   }
 
@@ -45,9 +48,16 @@ export class IoBus {
     return ((addr & 0x0FFFFF00) === 0x04000000) && lo >= 0xB0 && lo < 0xE0;
   }
 
+  private isMathAddr(addr: number): boolean {
+    // 0x04000280..0x040002BF
+    const masked = addr & 0x0FFFFFFF;
+    return masked >= 0x04000280 && masked < 0x040002C0;
+  }
+
   read32(addr: number): number {
     addr = addr >>> 0;
     if (this.isDmaAddr(addr)) return this.dma.read32(addr);
+    if (this.math && this.isMathAddr(addr)) return this.math.read32(addr & 0x0FFFFFFF);
     if ((addr & 0x0FFFFFFC) === 0x04100000) {
       return this.ipc.readRecv(this.isArm9);
     }
@@ -65,6 +75,7 @@ export class IoBus {
   read16(addr: number): number {
     addr = addr >>> 0;
     if (this.isDmaAddr(addr)) return this.dma.read16(addr);
+    if (this.math && this.isMathAddr(addr)) return this.math.read16(addr & 0x0FFFFFFF);
     if ((addr & 0x0FFFFFFF) === 0x04000180) return this.ipc.readSync(this.isArm9);
     if ((addr & 0x0FFFFFFF) === 0x04000184) return this.ipc.readCnt(this.isArm9);
     if ((addr & 0x0FFFFFFF) === 0x040001A0) return this.cart.readAuxSpiCnt();
@@ -72,6 +83,7 @@ export class IoBus {
   }
   read8(addr: number): number {
     addr = addr & 0x0FFFFFFF;
+    if (this.math && addr >= 0x04000280 && addr < 0x040002C0) return this.math.read8(addr);
     if (addr >= 0x04000000 && addr < 0x04000004) {
       return (this.ppu.dispcntA >>> ((addr & 3) * 8)) & 0xFF;
     }
@@ -151,6 +163,7 @@ export class IoBus {
   write32(addr: number, v: number): void {
     addr = addr >>> 0;
     if (this.isDmaAddr(addr)) { this.dma.write32(addr, v); return; }
+    if (this.math && this.isMathAddr(addr)) { this.math.write32(addr & 0x0FFFFFFF, v); return; }
     if ((addr & 0x0FFFFFFC) === 0x04000188) {
       this.ipc.writeSend(this.isArm9, v >>> 0);
       return;
@@ -165,6 +178,7 @@ export class IoBus {
   write16(addr: number, v: number): void {
     addr = addr >>> 0;
     if (this.isDmaAddr(addr)) { this.dma.write16(addr, v); return; }
+    if (this.math && this.isMathAddr(addr)) { this.math.write16(addr & 0x0FFFFFFF, v); return; }
     if ((addr & 0x0FFFFFFF) === 0x04000180) { this.ipc.writeSync(this.isArm9, v & 0xFFFF); return; }
     if ((addr & 0x0FFFFFFF) === 0x04000184) { this.ipc.writeCnt(this.isArm9, v & 0xFFFF);  return; }
     if ((addr & 0x0FFFFFFF) === 0x040001A0) { this.cart.writeAuxSpiCnt(v & 0xFFFF);         return; }
@@ -174,6 +188,7 @@ export class IoBus {
   write8(addr: number, v: number): void {
     addr = addr & 0x0FFFFFFF;
     if (this.isDmaAddr(addr | 0x04000000)) { this.dma.write8(addr, v); return; }
+    if (this.math && addr >= 0x04000280 && addr < 0x040002C0) { this.math.write8(addr, v); return; }
     if (addr >= 0x04000000 && addr < 0x04000004) {
       const shift = (addr & 3) * 8;
       this.ppu.dispcntA = ((this.ppu.dispcntA & ~(0xFF << shift)) | ((v & 0xFF) << shift)) >>> 0;

@@ -1,25 +1,49 @@
-// Sample ARM9 PC many times per frame to see what code is actually running.
+// Smoke-test menu navigation by injecting key events.
 import { readFileSync } from 'node:fs';
 import { Emulator } from '../emulator';
-import { disasmArm } from '../cpu/disasm';
+
+const KEY_DOWN  = 1 << 7;
+const KEY_A     = 1 << 0;
+const KEY_B     = 1 << 1;
 
 const rom = readFileSync('public/rockwrestler.nds');
 const emu = new Emulator();
 emu.loadRom(rom);
 
-const frames = parseInt(process.argv[2] ?? '30', 10);
-for (let i = 0; i < frames; i++) emu.runFrame();
+// Let menu settle.
+for (let i = 0; i < 30; i++) emu.runFrame();
 
-// Check VRAM bank A for any non-zero content.
+function press(bit: number, holdFrames: number, releaseFrames: number): void {
+  emu.io9.keyinput &= ~bit;
+  emu.io7.keyinput &= ~bit;
+  for (let i = 0; i < holdFrames; i++) emu.runFrame();
+  emu.io9.keyinput |= bit;
+  emu.io7.keyinput |= bit;
+  for (let i = 0; i < releaseFrames; i++) emu.runFrame();
+}
+
+const FRAMES_BEFORE = emu.ppu.frameCount;
+console.log(`Before nav: ARM9 PC=0x${emu.cpu9.state.r[15].toString(16)}`);
+
+// Press DOWN twice to move cursor down.
+press(KEY_DOWN, 1, 3);
+press(KEY_DOWN, 1, 3);
+console.log(`After 2× DOWN: ARM9 PC=0x${emu.cpu9.state.r[15].toString(16)}`);
+
+// Press A to enter submenu.
+press(KEY_A, 1, 5);
+console.log(`After A: ARM9 PC=0x${emu.cpu9.state.r[15].toString(16)}`);
+
+// Look at VRAM around the menu title area. The title should change.
 const vram = emu.mem.vram;
-let firstNonZero = -1;
-for (let i = 0; i < 256 * 192 * 2; i++) if (vram[i] !== 0) { firstNonZero = i; break; }
-console.log(`First non-zero VRAM byte: ${firstNonZero < 0 ? 'none' : '0x' + firstNonZero.toString(16) + ' = 0x' + vram[firstNonZero].toString(16)}`);
-
-// Sample a few pixels.
-const px = (x: number, y: number) => {
-  const off = (y * 256 + x) * 2;
-  return '0x' + (vram[off] | (vram[off + 1] << 8)).toString(16).padStart(4, '0');
-};
-console.log(`Pixels: (0,0)=${px(0, 0)} (50,50)=${px(50, 50)} (100,100)=${px(100, 100)} (200,150)=${px(200, 150)}`);
-console.log(`DISPCNT_A=0x${emu.ppu.dispcntA.toString(16)} VRAMCNT_A=0x${emu.ppu.vramcnt[0].toString(16)}`);
+// Decode the title row (row 0, columns 3..14): grab the 8x1 strip at
+// (3*8, 0)..(14*8+7, 0) and count distinct pixel values per 8-px column.
+// We just want to see whether ANY change occurred.
+let nonGreyTopRow = 0;
+for (let x = 0; x < 256; x++) {
+  const c = vram[x * 2] | (vram[x * 2 + 1] << 8);
+  if (c !== 0x56B5 && c !== 0) nonGreyTopRow++;
+}
+console.log(`Top-row non-grey pixel count: ${nonGreyTopRow}`);
+console.log(`Title bytes [16..32]: ${[...vram.subarray(16, 32)].map(b => b.toString(16).padStart(2, '0')).join(' ')}`);
+console.log(`Total frames simulated: ${emu.ppu.frameCount - FRAMES_BEFORE}`);

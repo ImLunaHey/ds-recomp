@@ -221,6 +221,66 @@ export function App() {
     [tick, romBytes, emu.header],
   );
 
+  // ---- Keyboard → KEYINPUT / EXTKEYIN ----
+  // NDS KEYINPUT bits are LOW when pressed. We keep a bitmask of held keys
+  // here and apply it to both io9 / io7 on every keydown/keyup. The dance
+  // matters: writing to keyinput once at keydown then not at keyup leaves
+  // the bit stuck pressed.
+  useEffect(() => {
+    const KEYINPUT_DEFAULT = 0x03FF;
+    const EXTKEY_DEFAULT   = 0x007F;
+    let keyinput = KEYINPUT_DEFAULT;
+    let extkey   = EXTKEY_DEFAULT;
+    const apply = () => {
+      emu.io9.keyinput = keyinput;
+      emu.io7.keyinput = keyinput;
+      emu.io9.extKeyinput = extkey;
+      emu.io7.extKeyinput = extkey;
+    };
+    // Map keyboard → NDS button bit. Bits below are bit positions in
+    // keyinput (0..9) or extKeyinput (0..1, 6, 7). Returns null for keys
+    // we don't handle.
+    const bitFor = (k: string): { ext: boolean; bit: number } | null => {
+      switch (k) {
+        case 'z': case 'Z':       return { ext: false, bit: 0 };    // A
+        case 'x': case 'X':       return { ext: false, bit: 1 };    // B
+        case 'Shift':             return { ext: false, bit: 2 };    // Select
+        case 'Enter':             return { ext: false, bit: 3 };    // Start
+        case 'ArrowRight':        return { ext: false, bit: 4 };
+        case 'ArrowLeft':         return { ext: false, bit: 5 };
+        case 'ArrowUp':           return { ext: false, bit: 6 };
+        case 'ArrowDown':         return { ext: false, bit: 7 };
+        case 's': case 'S':       return { ext: false, bit: 8 };    // R
+        case 'a': case 'A':       return { ext: false, bit: 9 };    // L
+        case 'q': case 'Q':       return { ext: true,  bit: 0 };    // X
+        case 'w': case 'W':       return { ext: true,  bit: 1 };    // Y
+        default: return null;
+      }
+    };
+    const onDown = (e: KeyboardEvent) => {
+      const m = bitFor(e.key);
+      if (!m) return;
+      if (m.ext) extkey   &= ~(1 << m.bit);
+      else       keyinput &= ~(1 << m.bit);
+      apply();
+      e.preventDefault();
+    };
+    const onUp = (e: KeyboardEvent) => {
+      const m = bitFor(e.key);
+      if (!m) return;
+      if (m.ext) extkey   |= (1 << m.bit);
+      else       keyinput |= (1 << m.bit);
+      apply();
+      e.preventDefault();
+    };
+    window.addEventListener('keydown', onDown);
+    window.addEventListener('keyup', onUp);
+    return () => {
+      window.removeEventListener('keydown', onDown);
+      window.removeEventListener('keyup', onUp);
+    };
+  }, [emu]);
+
   // Main run loop. Each rAF: run one frame, paint both screens, sample stats.
   useEffect(() => {
     if (!running) return;
