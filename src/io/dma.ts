@@ -76,10 +76,23 @@ export class Dma {
     const m = this.channelForAddr(addr);
     if (!m) return 0;
     const c = this.channels[m.ch];
-    // Reads of the half-word inside CNT.
-    if (m.off === 8) return c.countCtrl & 0xFFFF;
+    // Half-word access to any of SRC / DST / CNT.
+    if (m.off === 0)  return c.src & 0xFFFF;
+    if (m.off === 2)  return (c.src >>> 16) & 0xFFFF;
+    if (m.off === 4)  return c.dst & 0xFFFF;
+    if (m.off === 6)  return (c.dst >>> 16) & 0xFFFF;
+    if (m.off === 8)  return c.countCtrl & 0xFFFF;
     if (m.off === 10) return (c.countCtrl >>> 16) & 0xFFFF;
     return 0;
+  }
+  read8(addr: number): number {
+    const m = this.channelForAddr(addr);
+    if (!m) return 0;
+    const c = this.channels[m.ch];
+    const shift = (m.off & 3) * 8;
+    if (m.off < 4)      return (c.src >>> shift) & 0xFF;
+    if (m.off < 8)      return (c.dst >>> shift) & 0xFF;
+    return (c.countCtrl >>> shift) & 0xFF;
   }
 
   write32(addr: number, value: number): void {
