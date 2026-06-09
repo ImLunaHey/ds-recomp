@@ -39,7 +39,8 @@ export class BiosHle {
       switch (swi) {
         case 0x04: return this.intrWait(s.r[0], s.r[1]);
         case 0x05: return this.vblankWait();
-        case 0x06: s.halted = true; return true;
+        case 0x06: return this.halt();
+        case 0x07: return this.halt();   // Sleep — treat as halt
         case 0x09: { divide(s.r[0] | 0, s.r[1] | 0, s); return true; }
         case 0x0B: cpuSet(this.cpu, s.r[0], s.r[1], s.r[2]); return true;
         case 0x0C: cpuFastSet(this.cpu, s.r[0], s.r[1], s.r[2]); return true;
@@ -49,7 +50,8 @@ export class BiosHle {
       switch (swi) {
         case 0x04: return this.intrWait(s.r[0], s.r[1]);
         case 0x05: return this.vblankWait();
-        case 0x06: s.halted = true; return true;
+        case 0x06: return this.halt();
+        case 0x07: return this.halt();   // Sleep — treat as halt
         case 0x09: { divide(s.r[0] | 0, s.r[1] | 0, s); return true; }
         case 0x0B: cpuSet(this.cpu, s.r[0], s.r[1], s.r[2]); return true;
         case 0x0C: cpuFastSet(this.cpu, s.r[0], s.r[1], s.r[2]); return true;
@@ -82,6 +84,20 @@ export class BiosHle {
 
   private vblankWait(): boolean {
     return this.intrWait(1, 1);
+  }
+
+  // BIOS HALT / Sleep — wait for any IRQ. Like IntrWait but doesn't
+  // touch IF or filter by mask. Must clear CPSR.I and set IME=1 so the
+  // halt-wake path in Cpu.step() can actually unhalt — the SWI entry
+  // raised CPSR.I to 1 to mask IRQs, and on real BIOS the return path
+  // restores it via SPSR. We bypass the return path and just unmask
+  // here. Also reachable from HALTCNT (0x04000301) writes.
+  halt(): boolean {
+    this.cpu.state.cpsr &= ~0x80;
+    this.irq.ime = true;
+    this.irq.recache();
+    this.cpu.state.halted = true;
+    return true;
   }
 
   // Called by the emulator each frame after PPU advance. If the CPU is

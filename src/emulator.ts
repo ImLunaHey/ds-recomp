@@ -78,6 +78,8 @@ export class Emulator {
     this.bios7 = new BiosHle(this.cpu7, this.irq7);
     this.cpu9.bios = this.bios9;
     this.cpu7.bios = this.bios7;
+    this.io9.bios = this.bios9;
+    this.io7.bios = this.bios7;
   }
 
   loadRom(rom: Uint8Array): void {

@@ -15,6 +15,7 @@ import type { Cart } from '../cart/cart';
 import type { Dma } from './dma';
 import type { DsMath } from './ds_math';
 import type { Spi } from './spi';
+import type { BiosHle } from '../bios/hle';
 
 export class IoBus {
   irq: Irq;
@@ -25,6 +26,7 @@ export class IoBus {
   dma: Dma;
   math: DsMath | null;     // ARM9 only — null on the ARM7 side
   spi: Spi | null;         // ARM7 only — null on the ARM9 side
+  bios: BiosHle | null = null;  // attached after Cpu construction
   isArm9: boolean;
   // POSTFLG — set to 1 once the boot completes. Some games poll this.
   postflg = 0;
@@ -320,7 +322,22 @@ export class IoBus {
       case 0x04000216: this.irq.ackIf((v & 0xFF) << 16); return;
       case 0x04000217: this.irq.ackIf((v & 0xFF) << 24); return;
       case 0x04000300: this.postflg = v & 0xFF; return;
-      case 0x04000301: this.haltcnt = v & 0xFF; return;
+      case 0x04000301: {
+        // HALTCNT — bit 7 = HALT, bit 6 = GBA-mode (we don't implement),
+        // 0x40 = sleep. Treat any of the halt-class bits as "halt CPU".
+        // Real BIOS clears CPSR.I before writing HALTCNT; if it didn't,
+        // the CPU couldn't wake — match that by unmasking IRQs here too,
+        // mirroring the bios HLE halt() path.
+        this.haltcnt = v & 0xFF;
+        if ((v & 0x80) !== 0 || (v & 0x40) !== 0) {
+          // We don't have a direct CPU reference here; instead arm a
+          // pending halt via the irq controller's IME unmask + cpu's
+          // halt() side-channel. Both happen at frame-boundary time —
+          // the bios.attachCpu link gives us that.
+          if (this.bios) this.bios.halt();
+        }
+        return;
+      }
       // SPI bus (ARM7 only). CNT is two bytes assembled, DATA is one
       // byte that triggers a transfer.
       case 0x040001C0: if (this.spi) { const c = this.spi.readCnt(); this.spi.writeCnt((c & 0xFF00) | (v & 0xFF)); } return;
