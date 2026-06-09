@@ -90,15 +90,18 @@ export class IoBus {
     if (addr >= 0x04001000 && addr < 0x04001004) {
       return (this.ppu.dispcntB >>> ((addr & 3) * 8)) & 0xFF;
     }
-    if (addr >= 0x04000240 && addr < 0x04000249) {
-      // ARM7 sees the same address range as VRAMSTAT (0x240) + WRAMSTAT
-      // (0x241), not the per-bank VRAMCNT_x.
-      if (!this.isArm9) {
-        if (addr === 0x04000240) return this.ppu.vramStat();
-        if (addr === 0x04000241) return this.mem.wramcnt & 0xFF;
-        return 0;
-      }
-      return this.ppu.vramcnt[addr - 0x04000240];
+    // VRAMCNT_A..G at 0x240..0x246, WRAMCNT at 0x247, VRAMCNT_H..I at
+    // 0x248..0x249. The ARM7-side mirror is VRAMSTAT at 0x240,
+    // WRAMSTAT at 0x241.
+    if (!this.isArm9) {
+      if (addr === 0x04000240) return this.ppu.vramStat();
+      if (addr === 0x04000241) return this.mem.wramcnt & 0xFF;
+      if (addr >= 0x04000242 && addr < 0x0400024A) return 0;
+    } else {
+      if (addr >= 0x04000240 && addr < 0x04000247) return this.ppu.vramcnt[addr - 0x04000240];
+      if (addr === 0x04000247) return this.mem.wramcnt & 0xFF;
+      if (addr === 0x04000248) return this.ppu.vramcnt[7];
+      if (addr === 0x04000249) return this.ppu.vramcnt[8];
     }
     // Engine A BG control + scroll: BG0CNT..BG3CNT at 0x08..0x0F,
     // BG0HOFS..BG3VOFS at 0x10..0x1F.
@@ -162,7 +165,6 @@ export class IoBus {
       case 0x04000216: return (this.irq.if_ >>> 16) & 0xFF;
       case 0x04000217: return (this.irq.if_ >>> 24) & 0xFF;
       case 0x04000300: return this.postflg & 0xFF;
-      case 0x04000247: return this.mem.wramcnt & 0xFF;
     }
     return 0;
   }
@@ -206,10 +208,13 @@ export class IoBus {
       this.ppu.dispcntB = ((this.ppu.dispcntB & ~(0xFF << shift)) | ((v & 0xFF) << shift)) >>> 0;
       return;
     }
-    if (addr >= 0x04000240 && addr < 0x04000249) {
+    if (addr >= 0x04000240 && addr < 0x0400024A) {
       // ARM7 writes are RO (it can only read VRAMSTAT / WRAMSTAT).
       if (!this.isArm9) return;
-      this.ppu.vramcnt[addr - 0x04000240] = v & 0xFF;
+      if (addr < 0x04000247)        this.ppu.vramcnt[addr - 0x04000240] = v & 0xFF;
+      else if (addr === 0x04000247) this.mem.wramcnt = v & 0x03;
+      else if (addr === 0x04000248) this.ppu.vramcnt[7] = v & 0xFF;
+      else if (addr === 0x04000249) this.ppu.vramcnt[8] = v & 0xFF;
       return;
     }
     // Engine A BG regs.
@@ -288,7 +293,6 @@ export class IoBus {
       case 0x04000215: this.irq.ackIf((v & 0xFF) << 8); return;
       case 0x04000216: this.irq.ackIf((v & 0xFF) << 16); return;
       case 0x04000217: this.irq.ackIf((v & 0xFF) << 24); return;
-      case 0x04000247: this.mem.wramcnt = v & 0x03; return;
       case 0x04000300: this.postflg = v & 0xFF; return;
       case 0x04000301: this.haltcnt = v & 0xFF; return;
     }

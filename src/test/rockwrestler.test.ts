@@ -27,6 +27,11 @@ function freshEmulator(): Emulator {
 // coords (tx, ty). Background is 0x56B5 (the light-grey clear color);
 // the test ROM's font draws characters with palette[1..3] over that.
 function tileLitCount(emu: Emulator, tx: number, ty: number): number {
+  // RockWrestler's font draws character ink with palette[0] = 0x0000
+  // (black) and uses palette[2] = 0x56B5 (light grey) as the
+  // background-matching color. So a "lit" pixel is anything that
+  // isn't 0x56B5 — the framebuffer is cleared to grey before each
+  // screen is drawn, so any value that isn't grey came from a char.
   const vram = emu.mem.vram;
   let n = 0;
   const baseX = tx * 8, baseY = ty * 8;
@@ -34,7 +39,7 @@ function tileLitCount(emu: Emulator, tx: number, ty: number): number {
     for (let dx = 0; dx < 8; dx++) {
       const off = ((baseY + dy) * 256 + (baseX + dx)) * 2;
       const c = (vram[off] | (vram[off + 1] << 8)) & 0x7FFF;
-      if (c !== 0x56B5 && c !== 0) n++;
+      if (c !== 0x56B5) n++;
     }
   }
   return n;
@@ -55,13 +60,16 @@ function looksLikeOk(emu: Emulator): boolean {
 }
 
 // All 6 top-level menu entries on the main menu.
+// Each top-level menu entry. The cpp_menu source classifies its
+// entries.type: 0 = test that draws "OK" on pass, 1 = submenu,
+// 2 = "just prints values" with no OK/FAIL screen.
 const TOP_MENU = [
-  { name: 'ARMv4', kind: 'submenu' },
-  { name: 'ARMv5', kind: 'submenu' },
-  { name: 'IPC', kind: 'submenu' },
-  { name: 'DS MATH', kind: 'submenu' },
-  { name: 'MEMORY', kind: 'submenu' },
-  { name: 'INITIAL STATE', kind: 'submenu' },
+  { name: 'ARMv4',          firstChildType: 0 },
+  { name: 'ARMv5',          firstChildType: 0 },
+  { name: 'IPC',            firstChildType: 0 },
+  { name: 'DS MATH',        firstChildType: 0 },
+  { name: 'MEMORY',         firstChildType: 0 },
+  { name: 'INITIAL STATE',  firstChildType: 2 },   // ipc/irq/cpsr — print-only
 ] as const;
 
 const haveRom = existsSync(ROM_PATH);
@@ -94,7 +102,7 @@ describe.skipIf(!haveRom)('RockWrestler boot + heartbeat', () => {
     for (let x = 0; x < 256; x++) {
       const off = x * 2;
       const c = (emu.mem.vram[off] | (emu.mem.vram[off + 1] << 8)) & 0x7FFF;
-      if (c !== 0x56B5 && c !== 0) lit++;
+      if (c !== 0x56B5) lit++;
     }
     expect(lit).toBeGreaterThan(20);
   });
@@ -121,7 +129,11 @@ describe.skipIf(!haveRom)('RockWrestler menu navigation', () => {
 describe.skipIf(!haveRom)('RockWrestler test categories run without timeout', () => {
   for (let i = 0; i < TOP_MENU.length; i++) {
     const entry = TOP_MENU[i];
-    it(`category #${i} (${entry.name}): first test reaches OK`, { timeout: 30000 }, () => {
+    const expectedToDrawOk = entry.firstChildType === 0;
+    const label = expectedToDrawOk
+      ? `category #${i} (${entry.name}): first test reaches OK`
+      : `category #${i} (${entry.name}): first entry runs (type-2, no OK screen)`;
+    it(label, { timeout: 30000 }, () => {
       const emu = freshEmulator();
       // Navigate to row i.
       for (let n = 0; n < i; n++) pressKey(emu, KEY.DOWN, 1, 4);
@@ -129,12 +141,29 @@ describe.skipIf(!haveRom)('RockWrestler test categories run without timeout', ()
       pressKey(emu, KEY.A, 1, 4);
       // Run first test.
       pressKey(emu, KEY.A, 1, 60);
-      // Give long-running tests up to 1200 more frames (~20s headless).
-      for (let f = 0; f < 1200; f++) {
+      // For type-0 tests poll up to 1200 frames waiting for "OK". For
+      // type-2 (no OK screen) we just need to let it run long enough
+      // to populate the print-out — 200 frames is plenty.
+      const cap = expectedToDrawOk ? 1200 : 200;
+      for (let f = 0; f < cap; f++) {
         emu.runFrame();
-        if (looksLikeOk(emu)) break;
+        if (expectedToDrawOk && looksLikeOk(emu)) break;
       }
-      expect(looksLikeOk(emu)).toBe(true);
+      if (expectedToDrawOk) {
+        expect(looksLikeOk(emu)).toBe(true);
+      } else {
+        // Type-2 entry just prints register values. Verify ARM9 isn't
+        // stuck in an infinite loop and that *some* non-background
+        // pixels exist somewhere in row 3 (where the first label/value
+        // line lives).
+        let lit = 0;
+        for (let x = 0; x < 256; x++) {
+          const off = ((3 * 8 + 3) * 256 + x) * 2;
+          const c = (emu.mem.vram[off] | (emu.mem.vram[off + 1] << 8)) & 0x7FFF;
+          if (c !== 0x56B5) lit++;
+        }
+        expect(lit).toBeGreaterThan(10);
+      }
     });
   }
 });
