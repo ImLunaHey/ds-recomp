@@ -36,9 +36,18 @@ export class Ppu {
   bgHofsB = new Uint16Array(4);
   bgVofsB = new Uint16Array(4);
 
-  // VRAMCNT_A..I — controls how each bank maps. The renderer only
-  // consults LCDC-direct mode (display mode 2) for now.
+  // VRAMCNT_A..I — controls how each bank maps. The bus uses these via
+  // VramRouter; the renderer also consults LCDC-direct mode when
+  // DISPCNT display-mode 2 is selected.
   vramcnt = new Uint8Array(9);
+
+  // ARM7-side VRAMSTAT: bit 0 = bank C in ARM7 mode, bit 1 = bank D.
+  vramStat(): number {
+    let v = 0;
+    if ((this.vramcnt[2] & 0x87) === 0x82) v |= 0x01;
+    if ((this.vramcnt[3] & 0x87) === 0x82) v |= 0x02;
+    return v;
+  }
 
   // Compositor framebuffers in 0x00BBGGRR (Uint8) form, 256×192 RGBA.
   fbA = new Uint8ClampedArray(SCREEN_W * SCREEN_H * 4);

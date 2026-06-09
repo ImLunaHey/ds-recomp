@@ -9,10 +9,12 @@ import {
   ARM7_IWRAM_MASK,
 } from './regions';
 import type { IoBus } from '../io/io';
+import type { VramRouter } from './vram_router';
 
 export class Bus7 {
   mem: SharedMemory;
   io: IoBus | null = null;
+  vram: VramRouter | null = null;
 
   constructor(mem: SharedMemory) {
     this.mem = mem;
@@ -28,6 +30,12 @@ export class Bus7 {
     }
     if ((addr >>> 24) === 0x02) {
       return { arr: this.mem.mainRam, idx: addr & MAIN_RAM_MASK };
+    }
+    // ARM7-allocated VRAM banks (C or D with VRAMCNT_x.MST = 2).
+    if (addr >= 0x06000000 && addr < 0x06040000 && this.vram) {
+      const idx = this.vram.resolveArm7(addr);
+      if (idx >= 0) return { arr: this.mem.vram, idx };
+      return null;
     }
     if ((addr >>> 24) === 0x03) {
       // 0x03800000+ is always ARM7-private IWRAM (64 KB).

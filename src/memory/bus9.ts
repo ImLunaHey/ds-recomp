@@ -16,10 +16,12 @@ import {
   ITCM_SIZE, DTCM_SIZE,
 } from './regions';
 import type { IoBus } from '../io/io';
+import type { VramRouter } from './vram_router';
 
 export class Bus9 {
   mem: SharedMemory;
   io: IoBus | null = null;
+  vram: VramRouter | null = null;
   // ITCM/DTCM are ARM9-private — fast on-die SRAM. CP15 control regs
   // pick the base + size; for now we keep the typical NDS defaults:
   // ITCM is mapped at 0x00000000–0x00007FFF (mirror up to the configured
@@ -79,16 +81,12 @@ export class Bus9 {
     if (addr >= PRAM_BASE && addr < PRAM_BASE + PRAM_SIZE) {
       return { arr: this.mem.pram, idx: addr - PRAM_BASE };
     }
-    if (addr >= VRAM_BASE && addr < VRAM_BASE + VRAM_TOTAL_SIZE) {
-      return { arr: this.mem.vram, idx: addr - VRAM_BASE };
-    }
-    // LCDC-mapped VRAM at 0x06800000+. In LCDC mode, each VRAM bank is
-    // visible directly at a fixed address (bank A at 0x06800000, B at
-    // 0x06820000, C at 0x06840000, etc.). Real hardware does this when
-    // VRAMCNT_x has MST = 0; we map the whole window into the same
-    // physical vram[] block since renderEngine() reads from there too.
-    if (addr >= 0x06800000 && addr < 0x06800000 + VRAM_TOTAL_SIZE) {
-      return { arr: this.mem.vram, idx: addr - 0x06800000 };
+    // VRAM ranges (BG, OBJ, sub-BG, sub-OBJ, LCDC alias) all go through
+    // the bank router which respects VRAMCNT_x mappings.
+    if (addr >= 0x06000000 && addr < 0x07000000 && this.vram) {
+      const idx = this.vram.resolveArm9(addr);
+      if (idx >= 0) return { arr: this.mem.vram, idx };
+      return null;
     }
     if (addr >= OAM_BASE && addr < OAM_BASE + OAM_SIZE) {
       return { arr: this.mem.oam, idx: addr - OAM_BASE };

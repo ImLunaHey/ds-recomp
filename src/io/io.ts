@@ -91,6 +91,13 @@ export class IoBus {
       return (this.ppu.dispcntB >>> ((addr & 3) * 8)) & 0xFF;
     }
     if (addr >= 0x04000240 && addr < 0x04000249) {
+      // ARM7 sees the same address range as VRAMSTAT (0x240) + WRAMSTAT
+      // (0x241), not the per-bank VRAMCNT_x.
+      if (!this.isArm9) {
+        if (addr === 0x04000240) return this.ppu.vramStat();
+        if (addr === 0x04000241) return this.mem.wramcnt & 0xFF;
+        return 0;
+      }
       return this.ppu.vramcnt[addr - 0x04000240];
     }
     // Engine A BG control + scroll: BG0CNT..BG3CNT at 0x08..0x0F,
@@ -200,6 +207,8 @@ export class IoBus {
       return;
     }
     if (addr >= 0x04000240 && addr < 0x04000249) {
+      // ARM7 writes are RO (it can only read VRAMSTAT / WRAMSTAT).
+      if (!this.isArm9) return;
       this.ppu.vramcnt[addr - 0x04000240] = v & 0xFF;
       return;
     }

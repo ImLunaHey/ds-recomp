@@ -6,6 +6,7 @@
 import { SharedMemory } from './memory/shared';
 import { Bus9 } from './memory/bus9';
 import { Bus7 } from './memory/bus7';
+import { VramRouter } from './memory/vram_router';
 import { loadNdsRom, type LoadResult } from './cart/loader';
 import { parseNdsHeader, type NdsHeader } from './cart/header';
 import { Cart } from './cart/cart';
@@ -52,6 +53,9 @@ export class Emulator {
     this.bus9 = new Bus9(this.mem);
     this.bus7 = new Bus7(this.mem);
     this.ppu = new Ppu(this.mem, this.irq9, this.irq7);
+    const vramRouter = new VramRouter(this.ppu.vramcnt);
+    this.bus9.vram = vramRouter;
+    this.bus7.vram = vramRouter;
     this.ipc = new Ipc(this.irq9, this.irq7);
     this.cart = new Cart();
     this.dma9 = new Dma(this.bus9, this.irq9, true);
