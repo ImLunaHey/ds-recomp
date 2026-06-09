@@ -74,6 +74,14 @@ export class Bus9 {
     if (addr >= VRAM_BASE && addr < VRAM_BASE + VRAM_TOTAL_SIZE) {
       return { arr: this.mem.vram, idx: addr - VRAM_BASE };
     }
+    // LCDC-mapped VRAM at 0x06800000+. In LCDC mode, each VRAM bank is
+    // visible directly at a fixed address (bank A at 0x06800000, B at
+    // 0x06820000, C at 0x06840000, etc.). Real hardware does this when
+    // VRAMCNT_x has MST = 0; we map the whole window into the same
+    // physical vram[] block since renderEngine() reads from there too.
+    if (addr >= 0x06800000 && addr < 0x06800000 + VRAM_TOTAL_SIZE) {
+      return { arr: this.mem.vram, idx: addr - 0x06800000 };
+    }
     if (addr >= OAM_BASE && addr < OAM_BASE + OAM_SIZE) {
       return { arr: this.mem.oam, idx: addr - OAM_BASE };
     }

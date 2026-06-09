@@ -7,27 +7,19 @@ const rom = readFileSync('public/rockwrestler.nds');
 const emu = new Emulator();
 emu.loadRom(rom);
 
-const pcHistogram = new Map<number, number>();
-let totalSamples = 0;
-const origStep = emu.cpu9.step.bind(emu.cpu9);
-emu.cpu9.step = () => {
-  // Sample every 100th instruction to keep cost low.
-  if ((totalSamples & 0xFF) === 0) {
-    const pc = emu.cpu9.state.r[15] & ~3;
-    pcHistogram.set(pc, (pcHistogram.get(pc) ?? 0) + 1);
-  }
-  totalSamples++;
-  return origStep();
-};
-
 const frames = parseInt(process.argv[2] ?? '30', 10);
 for (let i = 0; i < frames; i++) emu.runFrame();
 
-console.log(`Total ARM9 steps: ${totalSamples.toLocaleString()}`);
-console.log(`Distinct PCs sampled: ${pcHistogram.size}\n`);
-console.log(`Top 15 PCs by sample count:`);
-const sorted = [...pcHistogram.entries()].sort((a, b) => b[1] - a[1]).slice(0, 15);
-for (const [pc, n] of sorted) {
-  const insn = emu.bus9.read32(pc);
-  console.log(`  0x${pc.toString(16).padStart(8, '0')}  × ${String(n).padStart(5)}  ${insn.toString(16).padStart(8, '0')}  ${disasmArm(insn, pc)}`);
-}
+// Check VRAM bank A for any non-zero content.
+const vram = emu.mem.vram;
+let firstNonZero = -1;
+for (let i = 0; i < 256 * 192 * 2; i++) if (vram[i] !== 0) { firstNonZero = i; break; }
+console.log(`First non-zero VRAM byte: ${firstNonZero < 0 ? 'none' : '0x' + firstNonZero.toString(16) + ' = 0x' + vram[firstNonZero].toString(16)}`);
+
+// Sample a few pixels.
+const px = (x: number, y: number) => {
+  const off = (y * 256 + x) * 2;
+  return '0x' + (vram[off] | (vram[off + 1] << 8)).toString(16).padStart(4, '0');
+};
+console.log(`Pixels: (0,0)=${px(0, 0)} (50,50)=${px(50, 50)} (100,100)=${px(100, 100)} (200,150)=${px(200, 150)}`);
+console.log(`DISPCNT_A=0x${emu.ppu.dispcntA.toString(16)} VRAMCNT_A=0x${emu.ppu.vramcnt[0].toString(16)}`);
