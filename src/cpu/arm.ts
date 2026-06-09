@@ -111,6 +111,19 @@ export function armExecute(cpu: Cpu, instr: number): void {
     return;
   }
 
+  // ARMv5 DSP saturation arithmetic (QADD / QSUB / QDADD / QDSUB).
+  //   bits 27:24=0001, bit 23=0, bit 20=0, bits 7:4=0101.
+  if (cpu.isArm9 && (instr & 0x0F9000F0) === 0x01000050) {
+    armSaturation(cpu, instr);
+    return;
+  }
+  // ARMv5 DSP halfword multiplies (SMLAxy / SMLAWy / SMULWy / SMLALxy
+  // / SMULxy). bits 27:24=0001, bit 23=0, bit 20=0, bit 7=1, bit 4=0.
+  if (cpu.isArm9 && (instr & 0x0F900090) === 0x01000080) {
+    armDspMultiply(cpu, instr);
+    return;
+  }
+
   // MCR / MRC — CP15 access on ARM9. The ARM7 has no CP15; we still
   // accept the decode to avoid spurious "undefined" traps.
   if ((instr & 0x0F000010) === 0x0E000010) {
@@ -487,6 +500,117 @@ function armMultiply(cpu: Cpu, instr: number): void {
   s.r[rn] = lo;
   s.r[rd] = hi;
   if (setFlags) s.setNZ64Hi(hi, lo);
+}
+
+// ---------------------------------------------------------------- saturation
+// Sticky Q flag = CPSR bit 27.
+const FLAG_Q = 0x08000000 | 0;
+
+function sat32(value: number): { v: number; saturated: boolean } {
+  if (value > 0x7FFFFFFF) return { v: 0x7FFFFFFF, saturated: true };
+  if (value < -0x80000000) return { v: 0x80000000 | 0, saturated: true };
+  return { v: value, saturated: false };
+}
+
+function armSaturation(cpu: Cpu, instr: number): void {
+  const s = cpu.state;
+  const op = (instr >>> 21) & 0x3;     // 00=QADD, 01=QSUB, 10=QDADD, 11=QDSUB
+  const rn = (instr >>> 16) & 0xF;
+  const rd = (instr >>> 12) & 0xF;
+  const rm = instr & 0xF;
+  const a = s.r[rm] | 0;
+  const b = s.r[rn] | 0;
+  let result = 0, saturated = false;
+  switch (op) {
+    case 0: {                                                  // QADD: Rd = sat(Rm + Rn)
+      const r = sat32(a + b);
+      result = r.v; saturated = r.saturated;
+      break;
+    }
+    case 1: {                                                  // QSUB: Rd = sat(Rm - Rn)
+      const r = sat32(a - b);
+      result = r.v; saturated = r.saturated;
+      break;
+    }
+    case 2: {                                                  // QDADD: Rd = sat(Rm + sat(2*Rn))
+      const dbl = sat32(b * 2);
+      const r = sat32(a + dbl.v);
+      result = r.v; saturated = r.saturated || dbl.saturated;
+      break;
+    }
+    case 3: {                                                  // QDSUB: Rd = sat(Rm - sat(2*Rn))
+      const dbl = sat32(b * 2);
+      const r = sat32(a - dbl.v);
+      result = r.v; saturated = r.saturated || dbl.saturated;
+      break;
+    }
+  }
+  s.r[rd] = result >>> 0;
+  if (saturated) s.cpsr |= FLAG_Q;
+}
+
+// ---------------------------------------------------------------- DSP multiplies
+function armDspMultiply(cpu: Cpu, instr: number): void {
+  const s = cpu.state;
+  const op = (instr >>> 21) & 0x3;   // 00=SMLAxy 01=SMLAW/SMULW 10=SMLALxy 11=SMULxy
+  const rdHi = (instr >>> 16) & 0xF; // For SMLA/SMLAL/SMUL/W also serves as Rd
+  const rn   = (instr >>> 12) & 0xF; // For SMLA/SMLAL: Rn (accumulator low). For SMUL/W: 0 (SBZ).
+  const rs   = (instr >>> 8) & 0xF;
+  const x    = (instr >>> 5) & 1;    // For Rm half (low/high)
+  const y    = (instr >>> 6) & 1;    // For Rs half
+  const rm   = instr & 0xF;
+
+  const rmVal = s.r[rm];
+  const rsVal = s.r[rs];
+  const rmHalf = (x ? (rmVal >> 16) : (rmVal << 16) >> 16) | 0;   // sign-extended 16-bit
+  const rsHalf = (y ? (rsVal >> 16) : (rsVal << 16) >> 16) | 0;
+
+  switch (op) {
+    case 0x0: {                                                  // SMLAxy
+      const product = Math.imul(rmHalf, rsHalf);
+      const acc = s.r[rn] | 0;
+      const sum = (product + acc) | 0;
+      // Detect 32-bit signed overflow: if product and acc have same sign
+      // but sum's sign flips, that's overflow.
+      const overflow = (((product ^ sum) & (acc ^ sum)) < 0);
+      if (overflow) s.cpsr |= FLAG_Q;
+      s.r[rdHi] = sum >>> 0;
+      break;
+    }
+    case 0x1: {                                                  // SMLAWy / SMULWy
+      // Rm full 32-bit signed × Rs half (selected by y), take top 32 of
+      // result (i.e., shift right 16 with sign extension).
+      const big = BigInt(rmVal | 0) * BigInt(rsHalf);
+      const product32 = Number(BigInt.asIntN(48, big >> 16n)) | 0;
+      if (x === 0) {
+        // SMLAWy: + Rn, set Q on overflow
+        const acc = s.r[rn] | 0;
+        const sum = (product32 + acc) | 0;
+        const overflow = (((product32 ^ sum) & (acc ^ sum)) < 0);
+        if (overflow) s.cpsr |= FLAG_Q;
+        s.r[rdHi] = sum >>> 0;
+      } else {
+        // SMULWy: just Rd = top 32 of (Rm × Rs.y)
+        s.r[rdHi] = product32 >>> 0;
+      }
+      break;
+    }
+    case 0x2: {                                                  // SMLALxy
+      const product = BigInt(Math.imul(rmHalf, rsHalf));
+      const accLo = BigInt(s.r[rn] >>> 0);
+      const accHi = BigInt(s.r[rdHi] | 0);                       // signed extension
+      const acc = (BigInt.asIntN(64, accHi << 32n)) | accLo;
+      const sum64 = BigInt.asIntN(64, acc + product);
+      const sumUnsigned = BigInt.asUintN(64, sum64);
+      s.r[rn]   = Number(sumUnsigned & 0xFFFFFFFFn) >>> 0;
+      s.r[rdHi] = Number((sumUnsigned >> 32n) & 0xFFFFFFFFn) >>> 0;
+      break;
+    }
+    case 0x3: {                                                  // SMULxy
+      s.r[rdHi] = Math.imul(rmHalf, rsHalf) >>> 0;
+      break;
+    }
+  }
 }
 
 function armSwap(cpu: Cpu, instr: number): void {
