@@ -74,6 +74,7 @@ export class Emulator {
     // ptr literal inside them based on the current DTCM placement.
     installBiosStubs(this.mem);
     this.cpu9.cp15 = new Cp15(this.bus9, this.mem);
+    this.cpu9.cp15.cpu = this.cpu9;
     this.bios9 = new BiosHle(this.cpu9, this.irq9);
     this.bios7 = new BiosHle(this.cpu7, this.irq7);
     this.cpu9.bios = this.bios9;

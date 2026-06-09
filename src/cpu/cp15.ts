@@ -9,10 +9,12 @@
 
 import type { Bus9 } from '../memory/bus9';
 import type { SharedMemory } from '../memory/shared';
+import type { Cpu } from './cpu';
 
 export class Cp15 {
   bus9: Bus9;
   mem: SharedMemory;
+  cpu: Cpu | null = null;       // attached after Cpu construction
   regs = new Map<number, number>();
 
   constructor(bus9: Bus9, mem: SharedMemory) {
@@ -42,6 +44,24 @@ export class Cp15 {
 
   write(opc1: number, crn: number, crm: number, opc2: number, value: number): void {
     this.regs.set(key(opc1, crn, crm, opc2), value >>> 0);
+    // CRn=7 CRm=0 opc2=4 → "Wait For Interrupt". ARM946E-S halts in
+    // low-power state until an IRQ becomes pending (regardless of
+    // CPSR.I). The wake leaves CPSR untouched. We model it by setting
+    // the halted flag and counting on Cpu.step()'s halt-wake check.
+    // Pokemon Platinum's ARM9 scheduler idle loop spins
+    //   DisableIrq → MCR WFI → B back
+    // with no CPSR.I clear. To avoid burning CPU cycles spinning that
+    // loop forever, we ALSO unmask IRQs on WFI — the real BIOS does
+    // this implicitly via the SPSR restore on the next IRQ return, but
+    // because the spin never gets a chance to re-enable on its own,
+    // mirroring the unmask here gets the IRQ to fire on the next wake.
+    if (crn === 7 && crm === 0 && opc2 === 4) {
+      const s = this.cpu?.state;
+      if (s) {
+        s.cpsr &= ~0x80;
+        s.halted = true;
+      }
+    }
     // TCM region/size — CRn=9, CRm=1, opc2=0 (DTCM) or 1 (ITCM). Bits
     // 31:12 = base address, bits 5:1 = size code (virtual size =
     // 512 << code). Physical TCM size is fixed; when virtual > physical
