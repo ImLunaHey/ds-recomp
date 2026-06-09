@@ -48,6 +48,7 @@ export class BiosHle {
       }
     } else {
       switch (swi) {
+        case 0x03: return this.waitByLoop(s.r[0]);
         case 0x04: return this.intrWait(s.r[0], s.r[1]);
         case 0x05: return this.vblankWait();
         case 0x06: return this.halt();
@@ -55,6 +56,7 @@ export class BiosHle {
         case 0x09: { divide(s.r[0] | 0, s.r[1] | 0, s); return true; }
         case 0x0B: cpuSet(this.cpu, s.r[0], s.r[1], s.r[2]); return true;
         case 0x0C: cpuFastSet(this.cpu, s.r[0], s.r[1], s.r[2]); return true;
+        case 0x0E: return this.getCRC16(s);
       }
     }
     // Unhandled — pretend it succeeded (return to user). Better than
@@ -84,6 +86,34 @@ export class BiosHle {
 
   private vblankWait(): boolean {
     return this.intrWait(1, 1);
+  }
+
+  // BIOS GetCRC16 (SWI 0x0E on ARM7). Computes CRC-16 over a buffer.
+  // r0 = initial CRC, r1 = data ptr, r2 = byte length. Returns CRC in r0.
+  // Polynomial table is the standard NDS BIOS one (0xC0C1 et al. —
+  // equivalent to CRC-16/MODBUS, polynomial 0xA001 reflected).
+  private getCRC16(s: { r: Uint32Array }): boolean {
+    let crc = s.r[0] & 0xFFFF;
+    const ptr = s.r[1] >>> 0;
+    const len = s.r[2] >>> 0;
+    for (let i = 0; i < len; i++) {
+      crc ^= this.cpu.bus.read8((ptr + i) >>> 0);
+      for (let b = 0; b < 8; b++) {
+        crc = (crc & 1) ? ((crc >>> 1) ^ 0xA001) : (crc >>> 1);
+      }
+    }
+    s.r[0] = crc & 0xFFFF;
+    return true;
+  }
+
+  // BIOS WaitByLoop (SWI 0x03). r0 = iteration count. Real BIOS spins
+  // (roughly 4 ARM cycles per iteration). We just consume the call —
+  // games that use it for sub-frame timing get a sub-frame "instant
+  // sleep" instead, which is fine for everything except super-precise
+  // hardware probes.
+  private waitByLoop(_count: number): boolean {
+    void _count;
+    return true;
   }
 
   // BIOS HALT / Sleep — wait for any IRQ. Like IntrWait but doesn't
