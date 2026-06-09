@@ -5,7 +5,19 @@ import { decodeBannerIcon, decodeBannerTitle } from '../cart/banner';
 import { disasmArm } from '../cpu/disasm';
 import { SCREEN_W, SCREEN_H } from '../ppu/ppu';
 
-const DEFAULT_ROM = '/Pokemon - Platinum Version (USA) (Rev 1).nds';
+// Built-in ROMs that ship in public/. The .nds files themselves are
+// gitignored — users add their own copies.
+const BUILTIN_ROMS = [
+  { label: 'Pokemon Platinum', path: '/Pokemon - Platinum Version (USA) (Rev 1).nds' },
+  { label: 'RockWrestler (test)', path: '/rockwrestler.nds' },
+] as const;
+const STORAGE_KEY_ROM = 'ds-recomp:selectedRom';
+function pickInitialRom(): string {
+  if (typeof window === 'undefined') return BUILTIN_ROMS[0].path;
+  const saved = window.localStorage?.getItem(STORAGE_KEY_ROM);
+  if (saved && BUILTIN_ROMS.some((r) => r.path === saved)) return saved;
+  return BUILTIN_ROMS[0].path;
+}
 
 // Render the Pokemon Platinum banner icon through the live BG0
 // pipeline — real game graphics from the ROM, decoded via our
@@ -132,7 +144,7 @@ export function App() {
   const emu = emuRef.current;
 
   const [romBytes, setRomBytes] = useState<Uint8Array | null>(null);
-  const [src, setSrc] = useState(DEFAULT_ROM);
+  const [src, setSrc] = useState<string>(pickInitialRom());
   const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [tick, setTick] = useState(0);
@@ -155,15 +167,33 @@ export function App() {
     }
   }, [emu]);
 
-  // Initial fetch of the bundled ROM.
+  const loadBuiltin = useCallback(async (path: string) => {
+    setRunning(false);
+    try {
+      const res = await fetch(path);
+      if (!res.ok) throw new Error(`fetch ${path} → ${res.status}`);
+      const buf = new Uint8Array(await res.arrayBuffer());
+      loadFromBytes(buf, path);
+      try { window.localStorage?.setItem(STORAGE_KEY_ROM, path); } catch { /* ignore quota */ }
+      setRunning(true);    // autoplay
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }, [loadFromBytes]);
+
+  // Initial fetch of the most-recently-used built-in ROM (or default).
   useEffect(() => {
     let cancelled = false;
+    const path = pickInitialRom();
     (async () => {
       try {
-        const res = await fetch(DEFAULT_ROM);
-        if (!res.ok) throw new Error(`fetch ${DEFAULT_ROM} → ${res.status}`);
+        const res = await fetch(path);
+        if (!res.ok) throw new Error(`fetch ${path} → ${res.status}`);
         const buf = new Uint8Array(await res.arrayBuffer());
-        if (!cancelled) loadFromBytes(buf, DEFAULT_ROM);
+        if (!cancelled) {
+          loadFromBytes(buf, path);
+          setRunning(true);    // autoplay on initial load
+        }
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
       }
@@ -307,7 +337,23 @@ export function App() {
           loadFromBytes(new Uint8Array(await f.arrayBuffer()), f.name);
         }}
       >
-        <p className="text-xs text-zinc-400 mb-2">Drag a <code>.nds</code> here to load it.</p>
+        <div className="flex items-center gap-2 mb-2">
+          <span className="text-xs text-zinc-400">Built-in:</span>
+          {BUILTIN_ROMS.map((r) => (
+            <button
+              key={r.path}
+              className={`px-2 py-1 rounded text-xs border ${
+                src === r.path
+                  ? 'bg-emerald-700 border-emerald-500 text-white'
+                  : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:bg-zinc-700'
+              }`}
+              onClick={() => loadBuiltin(r.path)}
+            >
+              {r.label}
+            </button>
+          ))}
+        </div>
+        <p className="text-xs text-zinc-400 mb-2">…or drag a <code>.nds</code> here.</p>
         <p className="text-xs text-zinc-500">Currently loaded: <code className="text-zinc-300">{src}</code></p>
       </section>
 
