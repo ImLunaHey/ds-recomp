@@ -9,6 +9,8 @@ import { SCREEN_W, SCREEN_H } from '../ppu/ppu';
 // gitignored — users add their own copies.
 const BUILTIN_ROMS = [
   { label: 'Pokemon Platinum',  path: '/Pokemon - Platinum Version (USA) (Rev 1).nds' },
+  { label: 'New Super Mario',   path: '/New Super Mario Bros.nds' },
+  { label: 'Nintendogs',        path: '/Nintendogs - Labrador.nds' },
   { label: 'RockWrestler',      path: '/rockwrestler.nds' },
   { label: 'obj mosaic',        path: '/test_obj_mosaic.nds' },
   { label: 'obj priority',      path: '/test_obj_prio.nds' },
