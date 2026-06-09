@@ -8,8 +8,11 @@ import { SCREEN_W, SCREEN_H } from '../ppu/ppu';
 // Built-in ROMs that ship in public/. The .nds files themselves are
 // gitignored — users add their own copies.
 const BUILTIN_ROMS = [
-  { label: 'Pokemon Platinum', path: '/Pokemon - Platinum Version (USA) (Rev 1).nds' },
-  { label: 'RockWrestler (test)', path: '/rockwrestler.nds' },
+  { label: 'Pokemon Platinum',  path: '/Pokemon - Platinum Version (USA) (Rev 1).nds' },
+  { label: 'RockWrestler',      path: '/rockwrestler.nds' },
+  { label: 'obj mosaic',        path: '/test_obj_mosaic.nds' },
+  { label: 'obj priority',      path: '/test_obj_prio.nds' },
+  { label: 'obj mosaic fuzz',   path: '/test_obj_mos_fuzz.nds' },
 ] as const;
 const STORAGE_KEY_ROM = 'ds-recomp:selectedRom';
 function pickInitialRom(): string {
