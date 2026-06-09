@@ -646,8 +646,15 @@ function armBlockTransfer(cpu: Cpu, instr: number): void {
   let count = 0;
   for (let i = 0; i < 16; i++) if (list & (1 << i)) count++;
   if (count === 0) {
-    if (L) { s.r[15] = cpu.bus.read32(s.r[rn] & ~3); cpu.flushPipeline(); }
-    else   { cpu.bus.write32(s.r[rn] & ~3, s.r[15]); }
+    // Empty rlist quirk. ARMv4T (ARM7) actually loads/stores PC and
+    // advances by 0x40. ARMv5T (ARM9) treats it as unpredictable — on
+    // real ARM9 hardware nothing is loaded or stored, but the base
+    // still updates by 0x40. RockWrestler ARMv5 → LDM/STM TEST B
+    // exercises this with literal opcode 0xE8B20000.
+    if (!cpu.isArm9) {
+      if (L) { s.r[15] = cpu.bus.read32(s.r[rn] & ~3); cpu.flushPipeline(); }
+      else   { cpu.bus.write32(s.r[rn] & ~3, s.r[15]); }
+    }
     if (W) s.r[rn] = U ? (s.r[rn] + 0x40) >>> 0 : (s.r[rn] - 0x40) >>> 0;
     return;
   }
@@ -696,7 +703,13 @@ function armBlockTransfer(cpu: Cpu, instr: number): void {
       if (!(list & (1 << i))) continue;
       let v = s.r[i];
       if (i === 15) v = (v + 4) >>> 0;
-      if (i === rn && firstStored) v = writebackAddr;
+      // STM base-in-list semantics differ between ARMv4T and ARMv5T:
+      //   ARM7 (v4T): if base is NOT the first stored, the stored
+      //               value is the post-writeback address.
+      //   ARM9 (v5T): the OLD base value is always stored regardless
+      //               of position. (RockWrestler ARMv5 → LDM/STM
+      //               TEST 16 catches the wrong behavior.)
+      if (!cpu.isArm9 && i === rn && firstStored) v = writebackAddr;
       cpu.bus.write32(addr & ~3, v >>> 0);
       addr = (addr + 4) >>> 0;
       firstStored = true;
@@ -704,5 +717,22 @@ function armBlockTransfer(cpu: Cpu, instr: number): void {
   }
 
   if (userBank) s.switchMode(savedMode);
-  if (W) s.r[rn] = writebackAddr;
+  // For LDM with writeback when the base is in the rlist, ARMv5 has
+  // observable quirks (RockWrestler ARMv5 → LDM/STM tests 4/7/A):
+  //   - count == 1 (only base in list): writeback wins → base = writeback addr
+  //   - count > 1, base is the highest-numbered register in list:
+  //     loaded value survives → writeback suppressed
+  //   - count > 1, base is NOT the highest: writeback wins (overwrites
+  //     the value that was loaded into base earlier in the loop)
+  // STM uses a different rule (first-vs-not-first stored value), handled
+  // in the store branch of armBlockTransfer.
+  let suppressWriteback = false;
+  if (W && L && (list & (1 << rn))) {
+    if (count > 1) {
+      let highestBit = -1;
+      for (let i = 15; i >= 0; i--) if (list & (1 << i)) { highestBit = i; break; }
+      if (rn === highestBit) suppressWriteback = true;
+    }
+  }
+  if (W && !suppressWriteback) s.r[rn] = writebackAddr;
 }

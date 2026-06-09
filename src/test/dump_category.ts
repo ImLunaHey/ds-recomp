@@ -29,7 +29,7 @@ press(KEY_A, 1, 60);
 for (let f = 0; f < 1200; f++) emu.runFrame();
 
 const vram = emu.mem.vram;
-const W = 256, H = 192;
+const W = 256;
 const RAMP = ' .:-=+*#%@';
 let out = '';
 for (let cy = 0; cy < 24; cy++) {

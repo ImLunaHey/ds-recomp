@@ -35,8 +35,7 @@ export class DsMath {
       n = BigInt.asIntN(32, BigInt(u32LE(this.numer, 0)));
       d = BigInt.asIntN(32, BigInt(u32LE(this.denom, 0)));
     } else if (mode === 1 || mode === 3) {
-      // mode 3 is reserved; on real HW behaves like mode 1 (64/32). We do
-      // the same here so games that accidentally hit it don't blow up.
+      // mode 3 is reserved; on real HW behaves like mode 1 (64/32).
       n = u64LESigned(this.numer);
       d = BigInt.asIntN(32, BigInt(u32LE(this.denom, 0)));
     } else {
@@ -44,23 +43,37 @@ export class DsMath {
       d = u64LESigned(this.denom);
     }
 
+    // Error bit (DIVCNT bit 14) checks the FULL 64-bit DENOM register,
+    // regardless of mode. RockWrestler tests that 32/32 mode with
+    // denom_lo=0 but denom_hi!=0 produces div-by-zero result behavior
+    // WITHOUT setting the error bit.
+    const fullDenom = u64LEUnsigned(this.denom);
+    if (fullDenom === 0n) this.divcnt = (this.divcnt | 0x4000) & 0xFFFF;
+    else                  this.divcnt = (this.divcnt & ~0x4000) & 0xFFFF;
+
     let q: bigint, r: bigint;
-    // Div-by-zero flag (bit 14).
-    if (d === 0n) {
-      this.divcnt = (this.divcnt | 0x4000) & 0xFFFF;
-      // GBATEK: result = -1 or +1 depending on the sign of the numerator,
-      // remainder = numerator. Mode-1 docs say result = sign(n) << 63.
+    const divByZero = d === 0n;       // divide-by-zero result behavior
+    if (divByZero) {
       q = n < 0n ? 1n : -1n;
       r = n;
     } else {
-      this.divcnt = this.divcnt & ~0x4000 & 0xFFFF;
-      // Truncating signed division.
       q = bigIntTruncDiv(n, d);
       r = n - q * d;
     }
 
-    write64LE(this.result, q);
-    write64LE(this.remain, r);
+    // In 32/32 mode div-by-0, real HW writes a buggy high half for the
+    // result: the high half is sign-extension of the *numerator*, not
+    // of the low quotient. RockWrestler tests this specifically. The
+    // remainder follows the normal sign-extension (= numerator anyway).
+    if (mode === 0 && divByZero) {
+      const numHigh = n < 0n ? 0xFFFFFFFFn : 0n;
+      const qLo = BigInt.asUintN(32, q);
+      write64LE(this.result, (numHigh << 32n) | qLo);
+      write64LE(this.remain,  r);
+    } else {
+      write64LE(this.result, q);
+      write64LE(this.remain,  r);
+    }
   }
 
   // ---- Square root ----

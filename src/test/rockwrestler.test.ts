@@ -63,14 +63,46 @@ function looksLikeOk(emu: Emulator): boolean {
 // Each top-level menu entry. The cpp_menu source classifies its
 // entries.type: 0 = test that draws "OK" on pass, 1 = submenu,
 // 2 = "just prints values" with no OK/FAIL screen.
-const TOP_MENU = [
-  { name: 'ARMv4',          firstChildType: 0 },
-  { name: 'ARMv5',          firstChildType: 0 },
-  { name: 'IPC',            firstChildType: 0 },
-  { name: 'DS MATH',        firstChildType: 0 },
-  { name: 'MEMORY',         firstChildType: 0 },
-  { name: 'INITIAL STATE',  firstChildType: 2 },   // ipc/irq/cpsr — print-only
-] as const;
+type Child = { name: string; type: 0 | 2 };
+const SUBMENUS: Array<{ name: string; children: Child[] }> = [
+  { name: 'ARMv4', children: [
+    { name: 'CONDITION CODES', type: 0 },
+  ]},
+  { name: 'ARMv5', children: [
+    { name: 'CLZ', type: 0 },
+    { name: 'QADD, QSUB', type: 0 },
+    { name: 'QDADD, QDSUB', type: 0 },
+    { name: 'SMULxy', type: 0 },
+    { name: 'SMLAxy', type: 0 },
+    { name: 'SMULWy', type: 0 },
+    { name: 'SMLAWy', type: 0 },
+    { name: 'SMLALxy', type: 0 },
+    { name: 'BLX', type: 0 },
+    { name: 'LDR r15, POP {r15}, LDM {r15}', type: 0 },
+    { name: 'LDM / STM', type: 0 },
+  ]},
+  { name: 'IPC', children: [
+    { name: 'IPCSYNC', type: 0 },
+    { name: 'IPCFIFO', type: 0 },
+    { name: 'IPCFIFO IRQ', type: 0 },
+  ]},
+  { name: 'DS MATH', children: [
+    { name: 'SQRT 32', type: 0 },
+    { name: 'SQRT 64', type: 0 },
+    { name: 'DIV 32/32', type: 0 },
+    { name: 'DIV 64/32', type: 0 },
+    { name: 'DIV 64/64', type: 0 },
+  ]},
+  { name: 'MEMORY', children: [
+    { name: 'WRAM CNT', type: 0 },
+    { name: 'VRAM CNT', type: 0 },
+    { name: 'TCM', type: 0 },
+  ]},
+  { name: 'INITIAL STATE', children: [
+    { name: 'IPC/IRQ/CPSR', type: 2 },
+    { name: 'CP15', type: 2 },
+  ]},
+];
 
 const haveRom = existsSync(ROM_PATH);
 
@@ -126,44 +158,40 @@ describe.skipIf(!haveRom)('RockWrestler menu navigation', () => {
 
 // Per-submenu integration: navigate to the entry, press A to enter
 // submenu, press A again to run the first test, wait, check for "OK".
-describe.skipIf(!haveRom)('RockWrestler test categories run without timeout', () => {
-  for (let i = 0; i < TOP_MENU.length; i++) {
-    const entry = TOP_MENU[i];
-    const expectedToDrawOk = entry.firstChildType === 0;
-    const label = expectedToDrawOk
-      ? `category #${i} (${entry.name}): first test reaches OK`
-      : `category #${i} (${entry.name}): first entry runs (type-2, no OK screen)`;
-    it(label, { timeout: 30000 }, () => {
-      const emu = freshEmulator();
-      // Navigate to row i.
-      for (let n = 0; n < i; n++) pressKey(emu, KEY.DOWN, 1, 4);
-      // Enter submenu.
-      pressKey(emu, KEY.A, 1, 4);
-      // Run first test.
-      pressKey(emu, KEY.A, 1, 60);
-      // For type-0 tests poll up to 1200 frames waiting for "OK". For
-      // type-2 (no OK screen) we just need to let it run long enough
-      // to populate the print-out — 200 frames is plenty.
-      const cap = expectedToDrawOk ? 1200 : 200;
-      for (let f = 0; f < cap; f++) {
-        emu.runFrame();
-        if (expectedToDrawOk && looksLikeOk(emu)) break;
-      }
-      if (expectedToDrawOk) {
-        expect(looksLikeOk(emu)).toBe(true);
-      } else {
-        // Type-2 entry just prints register values. Verify ARM9 isn't
-        // stuck in an infinite loop and that *some* non-background
-        // pixels exist somewhere in row 3 (where the first label/value
-        // line lives).
-        let lit = 0;
-        for (let x = 0; x < 256; x++) {
-          const off = ((3 * 8 + 3) * 256 + x) * 2;
-          const c = (emu.mem.vram[off] | (emu.mem.vram[off + 1] << 8)) & 0x7FFF;
-          if (c !== 0x56B5) lit++;
+// Run every sub-test in every submenu — that's the full RockWrestler
+// matrix. For each, navigate down N times in the main menu (sub i),
+// press A to open the submenu, navigate down to the child, press A,
+// poll for OK / non-bg output, then dismiss back to main.
+describe.skipIf(!haveRom)('RockWrestler exhaustive sub-test matrix', () => {
+  for (let i = 0; i < SUBMENUS.length; i++) {
+    const submenu = SUBMENUS[i];
+    for (let j = 0; j < submenu.children.length; j++) {
+      const child = submenu.children[j];
+      const expectedToDrawOk = child.type === 0;
+      const label = `${submenu.name} → ${child.name} ${expectedToDrawOk ? 'reaches OK' : 'runs (type-2)'}`;
+      it(label, { timeout: 30000 }, () => {
+        const emu = freshEmulator();
+        for (let n = 0; n < i; n++) pressKey(emu, KEY.DOWN, 1, 4);
+        pressKey(emu, KEY.A, 1, 4);
+        for (let n = 0; n < j; n++) pressKey(emu, KEY.DOWN, 1, 4);
+        pressKey(emu, KEY.A, 1, 60);
+        const cap = expectedToDrawOk ? 1200 : 200;
+        for (let f = 0; f < cap; f++) {
+          emu.runFrame();
+          if (expectedToDrawOk && looksLikeOk(emu)) break;
         }
-        expect(lit).toBeGreaterThan(10);
-      }
-    });
+        if (expectedToDrawOk) {
+          expect(looksLikeOk(emu)).toBe(true);
+        } else {
+          let lit = 0;
+          for (let x = 0; x < 256; x++) {
+            const off = ((3 * 8 + 3) * 256 + x) * 2;
+            const c = (emu.mem.vram[off] | (emu.mem.vram[off + 1] << 8)) & 0x7FFF;
+            if (c !== 0x56B5) lit++;
+          }
+          expect(lit).toBeGreaterThan(10);
+        }
+      });
+    }
   }
 });
