@@ -155,10 +155,19 @@ export class Ppu {
   // jumps to address 0 (BIOS), returns garbage that isn't 0/1/6, and
   // spins forever at PC 0x0206971c+ polling the state-code u32 at
   // 0x02096130. Patch a tiny "MOV R0,#0 ; BX LR" thunk into main RAM
-  // at 0x027FF800 (shared OS area, BIOS-zerofilled) and install it
+  // at 0x023FF800 (shared OS area, BIOS-zerofilled) and install it
   // as the callback whenever the struct's "rom" tag is set. This
   // lets the dispatcher take its BEQ-on-zero path and exit the wait
   // loop, falling through into NSMB's actual graphics init.
+  //
+  // Address choice: the SDK BIOS-RAM block lives in the high mirror
+  // 0x027FF800-0x027FFE00, but BLX'ing into that mirror trips the
+  // Cpu.step bad-branch guard (which only accepts PC <0x02400000 for
+  // ARM9 — main RAM mirrors above 0x02400000 are treated as garbage
+  // PC and short-circuited via "simulate BX LR"). The canonical
+  // alias 0x023FF800 maps to the same byte (mainRam offset 0x3FF800)
+  // and IS accepted by the guard. Pointing the handle's vtable slot
+  // at the canonical alias makes the BLX actually execute MOV R0,#6.
   //
   // Detection: the struct is reliably tagged "rom\0" at +0x00 once
   // NSMB's crt0 has stamped it (around frame 64). We watch for that
@@ -231,7 +240,13 @@ export class Ppu {
   // Address of the shared "MOV R0,#6 ; BX LR" thunk inside main RAM
   // (a BIOS-zerofilled stretch of the SDK firmware-data window). The
   // ROM never executes from here, so it's safe to overlay our stub.
-  private static readonly NSMB_FS_THUNK_ADDR = 0x027FF800;
+  // Use the canonical 0x023FF800 alias instead of the 0x027FF800 high
+  // mirror so the bad-branch guard in Cpu.step (which only treats
+  // PC < 0x02400000 as ARM9-valid) actually executes the instructions
+  // when BLX'd into. The byte storage is identical — both addresses
+  // hit mainRam[0x3FF800] — but only the canonical alias survives
+  // the guard.
+  private static readonly NSMB_FS_THUNK_ADDR = 0x023FF800;
 
   // Write the shared 2-instruction ARM thunk into main RAM. Idempotent:
   // re-running the writes every VBlank simply restores the bytes if
@@ -318,12 +333,14 @@ export class Ppu {
       const tagOff = 0x96114;           // 0x02096114 & 0x3FFFFF
       if (ram[tagOff] !== 0x72 || ram[tagOff + 1] !== 0x6F ||
           ram[tagOff + 2] !== 0x6D || ram[tagOff + 3] !== 0x00) return;
-      // Install thunk at 0x027FF800. We return 6 ("I/O ready/complete")
-      // rather than 0 ("idle") — the agent's first guess of 0 took the
-      // BEQ branch but the outer wait loop kept polling because no
-      // forward progress happened. Return-6 takes a different branch
-      // at 0x02069748 (BEQ 0x02069760 → calls a completion handler at
-      // 0x02069760 instead of just clearing bit 0x200).
+      // Install thunk at 0x023FF800 (canonical alias of 0x027FF800 —
+      // same byte, but inside the bad-branch-guard's accepted range).
+      // We return 6 ("I/O ready/complete") rather than 0 ("idle") —
+      // the agent's first guess of 0 took the BEQ branch but the outer
+      // wait loop kept polling because no forward progress happened.
+      // Return-6 takes a different branch at 0x02069748 (BEQ
+      // 0x02069760 → calls a completion handler at 0x02069760 instead
+      // of just clearing bit 0x200).
       this.writeNsmbFsThunkBody(ram);
       // Install pointer at 0x02096164 (R5 + 0x50).
       const primaryHandleOff = 0x96114;

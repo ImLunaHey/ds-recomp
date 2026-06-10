@@ -2,7 +2,9 @@
 // fires once per VBlank from Ppu.endLine() and is responsible for:
 //
 //   - installing a 2-instruction "MOV R0,#6 ; BX LR" stub in main RAM
-//     at 0x027FF800 (the SDK firmware-data dead zone), and
+//     at 0x023FF800 (the canonical alias of 0x027FF800 — the SDK
+//     firmware-data dead zone; canonical alias used because Cpu.step's
+//     bad-branch guard rejects ARM9 PCs above 0x02400000), and
 //   - pointing every FS-Archive handle's vtable slot (+0x50) at it,
 //     so the SDK's dispatcher at 0x0206972c falls through its BEQ
 //     instead of spinning on the polled state code.
@@ -28,7 +30,7 @@ import { Irq } from '../io/irq';
 import { Ppu, DOTS_PER_LINE, LINES_PER_FRAME } from '../ppu/ppu';
 
 const FRAME_DOTS = DOTS_PER_LINE * LINES_PER_FRAME;
-const THUNK_ADDR = 0x027FF800;
+const THUNK_ADDR = 0x023FF800;
 
 function makePpu(): Ppu {
   const mem = new SharedMemory();
@@ -193,5 +195,49 @@ describe('NSMB NitroFS thunk', () => {
     const thunkOff = THUNK_ADDR & 0x3FFFFF;
     expect(readU32LE(ram, thunkOff    )).toBe(0xe3a00006);
     expect(readU32LE(ram, thunkOff + 4)).toBe(0xe12fff1e);
+  });
+
+  it('thunk address sits inside the ARM9 bad-branch-guard accepted range', () => {
+    // Cpu.step rejects ARM9 PCs >= 0x02400000 and short-circuits a BX LR
+    // when the prior instruction was a BLX to such an address. The thunk
+    // address MUST stay below that bound — otherwise the BLX into the
+    // thunk never actually executes MOV R0,#6, R0 retains its caller-
+    // supplied value, the dispatcher's CMP R0,#6 fails, and the FS
+    // request never completes. Keep this assertion so a "looks tidy,
+    // let's move it back to the 0x027FF800 mirror" refactor trips.
+    expect(THUNK_ADDR).toBeLessThan(0x02400000);
+    // Sanity check: ensure the thunk address is also within main RAM
+    // (not in DTCM/ITCM/BIOS), so the canonical/mirror equivalence
+    // story holds.
+    expect(THUNK_ADDR & 0x3FFFFF).toBe(0x3FF800);
+  });
+
+  it('the thunk actually executes when BLX-ed (round-trip via Cpu.step)', async () => {
+    // Sets up the thunk via the normal path, then takes a CPU through
+    // a synthetic BLX into the thunk address and confirms R0 = 6 and PC
+    // returns to LR. This is the regression test for the "PC in mirror
+    // gets short-circuited by the bad-branch guard" bug.
+    const { Cpu } = await import('../cpu/cpu');
+    const ppu = makePpu();
+    const ram = ppu.mem.mainRam;
+    stampHandle(ram, 0x96114, 'rom');
+    tickFrame(ppu);
+
+    // Bus9 from a fresh emulator-shaped wiring. We can't import Emulator
+    // here without dragging in cart/bios; the PPU we just used already
+    // has SharedMemory but no Bus9, so build one ourselves.
+    const { Bus9 } = await import('../memory/bus9');
+    const bus9 = new Bus9(ppu.mem);
+    const cpu = new Cpu(bus9, true);
+    cpu.reset(THUNK_ADDR, 0x0380FF00, 0x0380FFA0, 0x0380FFE0);
+    cpu.state.r[0] = 0xDEADBEEF;
+    const returnAddr = 0x02000000;
+    cpu.state.r[14] = returnAddr;
+
+    // Two steps: MOV R0,#6 (writes R0 = 6) then BX LR (jumps to LR).
+    cpu.step();
+    cpu.step();
+    expect(cpu.state.r[0]).toBe(6);
+    expect(cpu.state.r[15] & ~3).toBe(returnAddr);
   });
 });
