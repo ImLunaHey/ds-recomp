@@ -98,6 +98,13 @@ export class Cart {
   // Whether the SDK driver is asserting CS hold (AUXSPICNT bit 6 was 1
   // on the last write; released on transition 1 → 0).
   private auxHold = false;
+  // Set when CS-hold transitions 1 → 0 mid-transaction. The chip
+  // keeps CS asserted through the next data byte and releases after,
+  // matching the deferred-CS behavior of every real SPI controller —
+  // see the same fix in src/io/spi.ts. Pokemon's RDSR depends on
+  // this: it sends 0x05 with CS-hold=1, then drops CS-hold=0 and
+  // sends 0x00 expecting the status byte back.
+  private auxReleaseAfterNext = false;
   // True after AUXSPICNT bit 13 = 1; SPI writes route to the save chip.
   private auxToBackup = false;
   // Last byte sent out by the save chip — read back by AUXSPIDATA.
@@ -137,14 +144,21 @@ export class Cart {
   writeAuxSpiCnt(v: number): void {
     const newHold = ((v >> 6) & 1) !== 0;
     const newSelectBackup = ((v >> 13) & 1) !== 0;
-    // CS-hold falling 1 → 0 ends the current save transaction (chip
-    // deselect). The SDK writes hold = 1 for multi-byte, then 0 for
-    // the final byte; the falling edge then resets state for the next
-    // command.
-    if (this.auxHold && !newHold) {
+    // CS-hold falling 1 → 0 mid-transaction: defer end-of-transaction
+    // until after the NEXT data byte (Pokemon's RDSR depends on this).
+    // If we end immediately, the next DAT_W is treated as a new
+    // command and the SDK reads 0xFF instead of the status byte.
+    if (this.auxHold && !newHold && this.savBytePos > 0) {
+      this.auxReleaseAfterNext = true;
+    }
+    // CS rising 0 → 1 also starts a new transaction. If a previous one
+    // was left deferred without delivering its final byte, just reset
+    // — no chance to ever deliver it now.
+    if (!this.auxHold && newHold) {
       this.savCmd = 0;
       this.savAddrBytes = 0;
       this.savBytePos = 0;
+      this.auxReleaseAfterNext = false;
     }
     this.auxHold = newHold;
     this.auxToBackup = newSelectBackup;
@@ -159,6 +173,14 @@ export class Cart {
       return;
     }
     this.auxOut = this.savTickByte(v & 0xFF);
+    // If the SDK released CS-hold before this byte, the byte just
+    // exchanged was the final one — end the transaction now.
+    if (this.auxReleaseAfterNext) {
+      this.savCmd = 0;
+      this.savAddrBytes = 0;
+      this.savBytePos = 0;
+      this.auxReleaseAfterNext = false;
+    }
   }
 
   // SPI byte exchange with the save chip. Returns the byte the chip
