@@ -34,6 +34,19 @@ export class Cpu {
   bios: BiosHle | null = null;
   cycles = 0;
   irqLine = false;
+  // Halt-wake line: any enabled-and-pending IRQ (ie & if_ != 0), ignoring
+  // IME and CPSR.I. Real hardware lifts halt as soon as an enabled IRQ
+  // arrives — the CPU just doesn't enter the vector if IME or CPSR.I
+  // mask it, but it does resume execution. Without this, a CPU halted
+  // with IME=0 (e.g. SM64DS during its IPCSYNC handshake) never wakes.
+  wakeLine = false;
+  // Stall cycles — when nonzero, step() acts like halt for that many
+  // ticks but ignores irqLine. Used by BIOS HLE's WaitByLoop (SWI 0x03)
+  // to consume the requested number of cycles instead of returning
+  // instantly, which was breaking IPC handshakes that depend on
+  // WaitByLoop giving the remote CPU time to react to a nibble write
+  // (e.g. SM64DS early IPCSYNC dance at ARM7 0x037FB050..0x037FB078).
+  stallCycles = 0;
   branched = false;
 
   constructor(bus: ArmBus, isArm9: boolean) {
@@ -56,7 +69,22 @@ export class Cpu {
   step(): number {
     const s = this.state;
     if (s.halted) {
-      if (this.irqLine && !(s.cpsr & FLAG_I)) s.halted = false;
+      // Lift halt on any enabled-and-pending IRQ, regardless of IME and
+      // CPSR.I. The IRQ may still not be TAKEN (irqLine below gates that),
+      // but real hardware resumes execution past the halt either way.
+      if (this.wakeLine) s.halted = false;
+      this.cycles += 1;
+      return 1;
+    }
+    if (this.stallCycles > 0) {
+      // BIOS WaitByLoop simulation — burn a cycle without fetching, but
+      // do still allow IRQs to fire (real hardware spin doesn't disable
+      // interrupts, so a pending IRQ should be taken mid-wait).
+      this.stallCycles--;
+      if (this.irqLine && !(s.cpsr & FLAG_I)) {
+        this.stallCycles = 0;
+        this.takeIrq();
+      }
       this.cycles += 1;
       return 1;
     }

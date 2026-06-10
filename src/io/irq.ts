@@ -6,11 +6,20 @@ export class Irq {
   ie = 0;        // bitmask of enabled IRQ sources
   if_ = 0;       // bitmask of pending IRQ sources
   ime = false;   // master enable
-  // Pre-computed: ime && (ie & if_) — sampled by the CPU on every step.
+  // Pre-computed: ime && (ie & if_) — sampled by the CPU on every step
+  // to decide whether to TAKE an IRQ (jump to handler).
   cachedPending = false;
+  // Pre-computed: (ie & if_) — used to WAKE a halted CPU. Per GBATEK,
+  // HALTCNT halt exits as soon as an enabled-and-pending IRQ exists,
+  // even with IME=0 or CPSR.I=1 (the CPU just resumes past the halt
+  // without entering the IRQ vector). Some games run an IPC handshake
+  // with IME=0 and depend on this to wake from a SWI 0x06 idle.
+  wakePending = false;
 
   recache(): void {
-    this.cachedPending = this.ime && (this.ie & this.if_) !== 0;
+    const enabled = (this.ie & this.if_) !== 0;
+    this.cachedPending = this.ime && enabled;
+    this.wakePending = enabled;
   }
 
   raise(bit: number): void {

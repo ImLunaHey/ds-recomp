@@ -303,12 +303,17 @@ export class BiosHle {
   }
 
   // BIOS WaitByLoop (SWI 0x03). r0 = iteration count. Real BIOS spins
-  // (roughly 4 ARM cycles per iteration). We just consume the call —
-  // games that use it for sub-frame timing get a sub-frame "instant
-  // sleep" instead, which is fine for everything except super-precise
-  // hardware probes.
-  private waitByLoop(_count: number): boolean {
-    void _count;
+  // ~4 ARM cycles per iteration. Park the CPU in a stall state for that
+  // many cycles instead of returning instantly — IPC handshakes (e.g.
+  // SM64DS at ARM7 0x037FB050) use WaitByLoop between an IPCSYNC write
+  // and the matching readback to give the remote core time to echo a
+  // new nibble; without the delay the readback races the write and the
+  // handshake never converges.
+  private waitByLoop(count: number): boolean {
+    // Cap at a sane upper bound (256k cycles ≈ 12 scanlines) so a stuck
+    // game can't freeze the whole emulator on a giant WaitByLoop arg.
+    const cycles = Math.min((count >>> 0) * 4, 1 << 18);
+    this.cpu.stallCycles += cycles;
     return true;
   }
 

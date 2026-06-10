@@ -146,7 +146,12 @@ export class Emulator {
       // Each ARM9 step gets paired with 0 or 1 ARM7 step at a 2:1 ratio.
       for (let i = 0; i < a9Budget; i++) {
         cpu9.irqLine = irq9.cachedPending;
-        if (!(cpu9.state.halted && !cpu9.irqLine)) {
+        cpu9.wakeLine = irq9.wakePending;
+        // Halted CPU with no wake-line still needs to consume a "tick"
+        // worth of step() so the halt-wake check inside step() actually
+        // runs — otherwise stepping is skipped and the CPU never re-
+        // evaluates wake. We let step() handle the halt-wake itself.
+        if (!(cpu9.state.halted && !cpu9.wakeLine)) {
           cpu9.step();
           arm9Steps++;
         }
@@ -154,7 +159,8 @@ export class Emulator {
         if (a7Carry >= ARM9_STEPS_PER_DOT) {
           a7Carry -= ARM9_STEPS_PER_DOT;
           cpu7.irqLine = irq7.cachedPending;
-          if (!(cpu7.state.halted && !cpu7.irqLine)) {
+          cpu7.wakeLine = irq7.wakePending;
+          if (!(cpu7.state.halted && !cpu7.wakeLine)) {
             cpu7.step();
             arm7Steps++;
           }
