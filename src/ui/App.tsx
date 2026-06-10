@@ -8,6 +8,7 @@ import { SCREEN_W, SCREEN_H } from '../ppu/ppu';
 // Built-in ROMs that ship in public/. The .nds files themselves are
 // gitignored — users add their own copies.
 const BUILTIN_ROMS = [
+  { label: 'Brain Training',    path: '/Brain Training.nds' },
   { label: 'Pokemon Platinum',  path: '/Pokemon - Platinum Version (USA) (Rev 1).nds' },
   { label: 'New Super Mario',   path: '/New Super Mario Bros.nds' },
   { label: 'Nintendogs',        path: '/Nintendogs - Labrador.nds' },
