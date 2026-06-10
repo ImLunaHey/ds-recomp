@@ -62,6 +62,14 @@ const SAV_ADDR_SIZE_BY_GAME_CODE: Record<string, number> = {
   // 2-byte addressing: fbA renders 38 distinct colors of real game UI
   // (was 15 = error-screen text).
   CEPE: 2,
+  // Spider-Man: Edge of Time (USA) — EEPROM 0.5K. Telltale: the save
+  // driver uses cmd 0x0B (READ_HI) for addresses ≥ 0x100. That's only
+  // defined for the 0.5K EEPROM (1-byte addr + high/low half-cmds).
+  // After pressing START on the title screen, the SDK runs WREN →
+  // WRSR(0xF0) → RDSR sequence then attempts a read of 257 bytes via
+  // cmd 0x03 + cmd 0x0B; with 3-byte default that misreads as garbage
+  // and the game falls back to "save data could not be accessed".
+  B8IE: 1,
 };
 
 export class Cart {
