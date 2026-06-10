@@ -9,6 +9,7 @@
 
 import { Irq } from './irq';
 import type { Ppu } from '../ppu/ppu';
+// Affine BG IO helper (BG2/BG3 PA..PD + refX/refY) — see writeAffineByte().
 import type { SharedMemory } from '../memory/shared';
 import type { Ipc } from './ipc';
 import type { Cart } from '../cart/cart';
@@ -406,6 +407,12 @@ export class IoBus {
       arr[bg] = ((arr[bg] & ~(0xFF << shift)) | ((v & 0xFF) << shift)) & 0xFFFF;
       return;
     }
+    // Affine BG registers (Engine A): BG2 at 0x04000020..0x0400002F,
+    // BG3 at 0x04000030..0x0400003F.
+    if (addr >= 0x04000020 && addr < 0x04000040) {
+      writeAffineByte(this.ppu, true, addr - 0x04000020, v & 0xFF);
+      return;
+    }
     // MOSAIC registers (engine A/B). 16-bit; layout is 4 nibbles —
     // BG H, BG V, OBJ H, OBJ V (each "size" = N - 1).
     if (addr === 0x0400004C) {
@@ -491,6 +498,12 @@ export class IoBus {
       arr[bg] = ((arr[bg] & ~(0xFF << shift)) | ((v & 0xFF) << shift)) & 0xFFFF;
       return;
     }
+    // Affine BG registers (Engine B): BG2 at 0x04001020..0x0400102F,
+    // BG3 at 0x04001030..0x0400103F.
+    if (addr >= 0x04001020 && addr < 0x04001040) {
+      writeAffineByte(this.ppu, false, addr - 0x04001020, v & 0xFF);
+      return;
+    }
     if (addr >= 0x040001A8 && addr < 0x040001B0) {
       this.cart.writeCmdByte(addr - 0x040001A8, v & 0xFF);
       return;
@@ -570,4 +583,62 @@ export class IoBus {
       case 0x040001C3: return;
     }
   }
+}
+
+// Affine BG IO byte writer. `relOff` is the address relative to the
+// per-engine affine block (0 = BG2PA low, … 0x1F = BG3Y high). Layout:
+//   0x00..0x07  BG2 PA / PB / PC / PD (16-bit signed Q8.8 each)
+//   0x08..0x0B  BG2X (28-bit signed Q20.8, sign-extended from bit 27)
+//   0x0C..0x0F  BG2Y
+//   0x10..0x17  BG3 PA / PB / PC / PD
+//   0x18..0x1B  BG3X
+//   0x1C..0x1F  BG3Y
+//
+// Per GBATEK, writing to BG2X / BG2Y / BG3X / BG3Y *re-latches* the
+// running reference position immediately — subsequent HBlanks resume
+// PB/PD accumulation from the new value. Half-word writes still cause
+// a relatch on whichever byte triggers it, matching what most games do
+// (they write the full 32-bit X via str/strh anyway).
+function writeAffineByte(ppu: Ppu, isEngineA: boolean, relOff: number, byteVal: number): void {
+  const bg = (relOff & 0x10) !== 0 ? 3 : 2;
+  const inner = relOff & 0x0F;
+  const v = byteVal & 0xFF;
+  const pa = isEngineA ? ppu.bgPA_A : ppu.bgPA_B;
+  const pb = isEngineA ? ppu.bgPB_A : ppu.bgPB_B;
+  const pc = isEngineA ? ppu.bgPC_A : ppu.bgPC_B;
+  const pd = isEngineA ? ppu.bgPD_A : ppu.bgPD_B;
+  const rx = isEngineA ? ppu.bgRefX_A : ppu.bgRefX_B;
+  const ry = isEngineA ? ppu.bgRefY_A : ppu.bgRefY_B;
+  const rxL = isEngineA ? ppu.bgRefXLatched_A : ppu.bgRefXLatched_B;
+  const ryL = isEngineA ? ppu.bgRefYLatched_A : ppu.bgRefYLatched_B;
+
+  if (inner < 8) {
+    // PA / PB / PC / PD halves. inner 0..1 = PA lo/hi, 2..3 = PB, etc.
+    const which = inner >>> 1;
+    const isHi = (inner & 1) === 1;
+    const arr = which === 0 ? pa : which === 1 ? pb : which === 2 ? pc : pd;
+    const cur = arr[bg] & 0xFFFF;
+    const next = isHi ? ((cur & 0x00FF) | (v << 8)) : ((cur & 0xFF00) | v);
+    // Int16Array auto-sign-extends on store.
+    arr[bg] = next as number;
+    return;
+  }
+  // BGxX (inner 8..B) or BGxY (inner C..F) — 28-bit signed, stored in
+  // an Int32Array. The low 24 bits are the integer "tile/pixel" portion;
+  // bit 27 is the sign. We sign-extend on EVERY byte write so even a
+  // mid-word partial write of the high byte settles the sign correctly.
+  const isY = (inner & 0x4) !== 0;
+  const refArr   = isY ? ry  : rx;
+  const refArrL  = isY ? ryL : rxL;
+  const byteIdx = inner & 0x3;
+  const cur = refArr[bg] >>> 0;             // unsigned 32 view
+  const mask = ~(0xFF << (byteIdx * 8)) >>> 0;
+  let next = ((cur & mask) | (v << (byteIdx * 8))) >>> 0;
+  // 28-bit field: clear bits 28..31 and sign-extend from bit 27.
+  next &= 0x0FFFFFFF;
+  if ((next & 0x08000000) !== 0) next |= 0xF0000000;
+  refArr[bg]  = next | 0;
+  // Re-latch: subsequent HBlanks resume PB/PD accumulation from this
+  // new reference value, matching real-hardware "write-to-X re-latches".
+  refArrL[bg] = next | 0;
 }

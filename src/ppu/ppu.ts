@@ -40,6 +40,37 @@ export class Ppu {
   bgHofsB = new Uint16Array(4);
   bgVofsB = new Uint16Array(4);
 
+  // Affine BG registers (BG2/BG3 only — indices 2/3 of each array are
+  // populated; 0/1 are unused but kept for symmetry with the BGxCNT/
+  // BGxHOFS arrays so a single per-BG loop can index everything).
+  //
+  // PA/PB/PC/PD are 16-bit signed Q8.8 fixed-point. The 2D engine uses
+  //   worldX = PA*x + PB*y + refX
+  //   worldY = PC*x + PD*y + refY
+  // sampled at each visible pixel, with PB/PD added to the latched
+  // reference per HBlank (so the renderer just walks PA/PC per pixel).
+  //
+  // refX/refY are 28-bit signed Q20.8 (also called BG2X / BG2Y). The
+  // "latched" copies snapshot the running per-frame reference position;
+  // writing BG2X / BG2Y re-latches immediately, and at VCount=0 the
+  // latched copies are reseeded from refX / refY for the new frame.
+  bgPA_A = new Int16Array(4);
+  bgPB_A = new Int16Array(4);
+  bgPC_A = new Int16Array(4);
+  bgPD_A = new Int16Array(4);
+  bgRefX_A = new Int32Array(4);
+  bgRefY_A = new Int32Array(4);
+  bgRefXLatched_A = new Int32Array(4);
+  bgRefYLatched_A = new Int32Array(4);
+  bgPA_B = new Int16Array(4);
+  bgPB_B = new Int16Array(4);
+  bgPC_B = new Int16Array(4);
+  bgPD_B = new Int16Array(4);
+  bgRefX_B = new Int32Array(4);
+  bgRefY_B = new Int32Array(4);
+  bgRefXLatched_B = new Int32Array(4);
+  bgRefYLatched_B = new Int32Array(4);
+
   // VRAMCNT_A..I — controls how each bank maps. The bus uses these via
   // VramRouter; the renderer also consults LCDC-direct mode when
   // DISPCNT display-mode 2 is selected.
@@ -485,6 +516,22 @@ export class Ppu {
       this.irq7.raise(IRQ_VBLANK);    // ARM7 typically wants this unconditionally
       this.dma9?.triggerVBlank();
       this.dma7?.triggerVBlank();
+      // Affine BG reference reload. Per GBATEK §"DS Video BG Modes":
+      // BG2X / BG2Y / BG3X / BG3Y are latched at the START of each
+      // frame; PB/PD then accumulate into the latched copy per visible
+      // HBlank. Our render pipeline composites the whole frame here in
+      // one shot, so latch immediately before rendering so the per-
+      // scanline accumulator inside the affine renderer starts from a
+      // fresh reference. Direct writes to refX/refY during the frame
+      // also re-latch in the IO write path.
+      this.bgRefXLatched_A[2] = this.bgRefX_A[2];
+      this.bgRefYLatched_A[2] = this.bgRefY_A[2];
+      this.bgRefXLatched_A[3] = this.bgRefX_A[3];
+      this.bgRefYLatched_A[3] = this.bgRefY_A[3];
+      this.bgRefXLatched_B[2] = this.bgRefX_B[2];
+      this.bgRefYLatched_B[2] = this.bgRefY_B[2];
+      this.bgRefXLatched_B[3] = this.bgRefX_B[3];
+      this.bgRefYLatched_B[3] = this.bgRefY_B[3];
       renderEngineA(this);
       renderEngineB(this);
       this.frameCount++;

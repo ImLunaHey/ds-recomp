@@ -15,6 +15,7 @@
 import { Ppu, SCREEN_W, SCREEN_H } from './ppu';
 import { renderTextScanline } from './text_bg';
 import { renderBitmapScanline } from './bitmap_bg';
+import { renderAffineBgScanline, advanceAffineRefForScanline } from './affine_bg';
 import { renderObjScanline, newObjLine, clearObjLine } from './sprites';
 import { getActiveVramRouter } from '../memory/vram_router';
 
@@ -150,21 +151,50 @@ function renderEngine(ppu: Ppu, dispcnt: number, fb: Uint8ClampedArray, isEngine
   const evb = Math.min(16, (bldAlpha >>> 8) & 0x1F);
   const evy = Math.min(16, bldY & 0x1F);
 
-  // Which BGs are bitmap in extended modes?
-  function isBgBitmap(bg: number): boolean {
-    if (bg < 2) return false;
-    if (bgMode < 3) return false;
-    if (bgMode === 6 && bg === 2) return true;       // large bitmap
-    // Mode 3-5: BGxCNT bit 7 = 1 means bitmap mode (for BG2/BG3 if active).
-    return (bgCnt[bg] & 0x80) !== 0;
+  // Per-BG slot type by DISPCNT BG mode (GBATEK §"DS Video BG Modes"):
+  //   mode 0 — BG0..3 all text
+  //   mode 1 — BG0..2 text, BG3 affine
+  //   mode 2 — BG0..1 text, BG2/BG3 affine
+  //   mode 3 — BG0..2 text, BG3 extended (affine-tile or bitmap)
+  //   mode 4 — BG0..1 text, BG2 affine, BG3 extended
+  //   mode 5 — BG0..1 text, BG2/BG3 both extended
+  //   mode 6 — BG2 large bitmap only
+  //
+  // An "affine" slot uses the affine renderer with tile-mode forced
+  // regardless of BGxCNT bit 7. An "extended" slot also uses the affine
+  // renderer but with bit 7 deciding tile vs palette-bitmap vs direct-
+  // bitmap. Both feed renderAffineBgScanline; the only difference is
+  // the forceTile flag passed in.
+  function bgSlotKind(bg: number):
+    'text' | 'affine' | 'extended' | 'large-bitmap' | 'off' {
+    if (bg < 2) {
+      if (bgMode === 6) return 'off';
+      return 'text';
+    }
+    // BG2 / BG3.
+    if (bgMode === 0) return 'text';
+    if (bgMode === 6) {
+      return bg === 2 ? 'large-bitmap' : 'off';
+    }
+    if (bgMode === 1) {
+      return bg === 3 ? 'affine' : 'text';
+    }
+    if (bgMode === 2) {
+      return 'affine';
+    }
+    if (bgMode === 3) {
+      return bg === 2 ? 'text' : 'extended';
+    }
+    if (bgMode === 4) {
+      return bg === 2 ? 'affine' : 'extended';
+    }
+    // mode 5.
+    return 'extended';
   }
 
   function isBgEnabled(bg: number): boolean {
     if ((bgEnables & (1 << bg)) === 0) return false;
-    // Mode 0: all 4 text. Mode 1: BG0-2 text, BG3 ext. Mode 2: BG0,1 text,
-    // BG2,3 affine. Mode 3-5: extended BGs. Mode 6: BG2 large bitmap only.
-    if (bgMode === 6 && bg !== 2) return false;
-    return true;
+    return bgSlotKind(bg) !== 'off';
   }
 
   const bgLines = [bgLine0, bgLine1, bgLine2, bgLine3];
@@ -176,11 +206,24 @@ function renderEngine(ppu: Ppu, dispcnt: number, fb: Uint8ClampedArray, isEngine
 
     for (let bg = 0; bg < 4; bg++) {
       if (!isBgEnabled(bg)) continue;
-      if (isBgBitmap(bg)) {
+      const kind = bgSlotKind(bg);
+      if (kind === 'large-bitmap') {
         renderBitmapScanline(ppu.mem, bgCnt[bg], bgHofs[bg], bgVofs[bg],
                              bgVramBase, y, bgLines[bg]);
-      } else if (bgMode === 0 || bg < 2 || (bgMode === 1 && bg !== 3) ||
-                 (bgMode === 2 && bg < 2)) {
+      } else if (kind === 'affine' || kind === 'extended') {
+        // Affine BG (tile or extended-bitmap). The engine-A "global" BG
+        // base offsets (DISPCNT bits 24..26 for char data, 27..29 for
+        // screen map) are added on top of the per-BG fields. Engine B
+        // has no global base.
+        const charExtra   = isEngineA ? ((dispcnt >>> 24) & 0x7) * 0x10000 : 0;
+        const screenExtra = isEngineA ? ((dispcnt >>> 27) & 0x7) * 0x10000 : 0;
+        // Plain-affine slots ignore BGxCNT bit 7 — the slot is always
+        // affine-tile. Extended slots check bit 7 internally inside
+        // affine_bg.
+        const forceTile = kind === 'affine';
+        renderAffineBgScanline(ppu, isEngineA, bg, bgVramBase, pramBase,
+                               charExtra, screenExtra, forceTile, bgLines[bg]);
+      } else if (kind === 'text') {
         // Text mode for this BG. Use a temporary FB-style buffer.
         const lineRgba = scratchTextLine;
         renderTextScanline(ppu.mem, bgRegs, y, dispcnt, pramBase, bgVramBase,
@@ -195,8 +238,6 @@ function renderEngine(ppu: Ppu, dispcnt: number, fb: Uint8ClampedArray, isEngine
           const c = (b << 10) | (g << 5) | r;
           if (c !== backdrop) bgLines[bg][x] = c | 0x8000;
         }
-      } else {
-        // Affine BG / unsupported sub-mode — leave transparent.
       }
     }
 
@@ -293,6 +334,20 @@ function renderEngine(ppu: Ppu, dispcnt: number, fb: Uint8ClampedArray, isEngine
       }
 
       writePixelAt(fb, rowOff + x * 4, finalColor);
+    }
+
+    // Advance the affine reference for any affine-capable BG by one
+    // HBlank's worth of (PB, PD). Per GBATEK this addition happens for
+    // every visible scanline, including the LAST one (the bump after
+    // line 191 is harmless since the latched copies get reseeded from
+    // refX/refY at the next VBlank). Doing the bump only for slots that
+    // the current mode actually uses as affine keeps a stray write to
+    // BG2PB/BG3PB from affecting non-affine renders.
+    for (let bg = 2; bg < 4; bg++) {
+      const kind = bgSlotKind(bg);
+      if (kind === 'affine' || kind === 'extended') {
+        advanceAffineRefForScanline(ppu, isEngineA, bg);
+      }
     }
   }
 }
