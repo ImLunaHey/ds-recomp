@@ -263,8 +263,16 @@ export class Spi {
   // in initFirmware(), so use the same mapping here.
   private adcValueForChannel(ch: number): number {
     const pressed = this.touchX !== null && this.touchY !== null;
+    // TSC2046 channels (DS touchscreen IC):
+    //   0 = TEMP0, 1 = Y, 2 = BAT, 3 = Z1, 4 = Z2, 5 = X, 6 = AUX, 7 = TEMP1
+    // Z1/Z2 are pressure-sense channels. Many SDK touch drivers check
+    // these BEFORE X/Y — e.g. SM64DS won't process X/Y until Z1 is
+    // below a threshold AND Z2 above one. Returning 0 for both made
+    // the SDK think "no touch" even when X/Y had real values.
     if (!pressed) {
-      if (ch === 1) return 0xFFF;
+      if (ch === 1) return 0xFFF;     // Y reads max when not touched
+      if (ch === 3) return 0xFFF;     // Z1 = high impedance / no pressure
+      if (ch === 4) return 0x000;     // Z2 = no pressure
       return 0x000;
     }
     if (ch === 1) {
@@ -281,6 +289,8 @@ export class Spi {
       const t = (this.touchX! - pxLow) / (pxHigh - pxLow);
       return Math.max(0, Math.min(0xFFF, Math.round(adcLow + t * (adcHigh - adcLow))));
     }
+    if (ch === 3) return 0x100;     // Z1 = low value = strong touch
+    if (ch === 4) return 0xF00;     // Z2 = high value = strong touch
     return 0x000;
   }
 
