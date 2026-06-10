@@ -718,61 +718,13 @@ export function PlayerPage() {
         </div>
       </header>
 
-      <section
-        className="border border-zinc-700 rounded-lg p-4 mb-6 bg-zinc-900"
-        onDragOver={(e) => e.preventDefault()}
-        onDrop={async (e) => {
-          e.preventDefault();
-          const f = e.dataTransfer.files?.[0];
-          if (!f) return;
-          loadFromBytes(new Uint8Array(await f.arrayBuffer()), f.name);
-        }}
-      >
-        <div className="mb-3">
-          <div className="text-xs text-zinc-400 mb-1">Retail games</div>
-          <div className="flex flex-wrap gap-1.5">
-            {BUILTIN_ROMS.filter((r) => r.kind === 'retail').map((r) => (
-              <button
-                key={r.path}
-                className={`px-2 py-1 rounded text-xs border whitespace-nowrap ${
-                  src === r.path
-                    ? 'bg-emerald-700 border-emerald-500 text-white'
-                    : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:bg-zinc-700'
-                }`}
-                title={r.path}
-                onClick={() => loadBuiltin(r.path)}
-              >
-                {r.hint && <span className="mr-1">{r.hint}</span>}
-                {r.label}
-              </button>
-            ))}
-          </div>
-        </div>
-        <div className="mb-2">
-          <div className="text-xs text-zinc-400 mb-1">Tests / homebrew</div>
-          <div className="flex flex-wrap gap-1.5">
-            {BUILTIN_ROMS.filter((r) => r.kind === 'test').map((r) => (
-              <button
-                key={r.path}
-                className={`px-2 py-1 rounded text-xs border whitespace-nowrap ${
-                  src === r.path
-                    ? 'bg-emerald-700 border-emerald-500 text-white'
-                    : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:bg-zinc-700'
-                }`}
-                title={r.path}
-                onClick={() => loadBuiltin(r.path)}
-              >
-                {r.label}
-              </button>
-            ))}
-          </div>
-        </div>
-        <p className="text-xs text-zinc-400 mb-1">…or drag a <code>.nds</code> here.</p>
-        <p className="text-xs text-zinc-500">
-          Currently loaded: <code className="text-zinc-300">{src}</code>{' '}
-          <span className="text-zinc-600">· 🟢 visible · 🟡 boots, no display · 🔴 stalls early</span>
-        </p>
-      </section>
+      {/* Whole-page drag-target for ad-hoc ROM loading. No visible
+          chrome — just dropping a .nds anywhere on the page loads it.
+          The on-page ROM picker is the LibraryPage. */}
+      <div
+        className="fixed inset-0 pointer-events-none z-0"
+        onDragOver={(e) => { e.preventDefault(); }}
+      />
 
       {error && (
         <div className="border border-red-700 bg-red-950/40 text-red-200 rounded p-3 mb-6 text-sm whitespace-pre-wrap">
@@ -889,8 +841,15 @@ export function PlayerPage() {
             </div>
           )}
 
+          {/* Live debug snapshot — polls twice a second, shows CPU+IRQ
+              state, PPU progress, IPC, sound channel activity, DMA
+              channels. Independent of the slower stats panel above so
+              you see motion even when paused. */}
+          <DebugLog emu={emu} />
+
           {emu.header && (
-            <div className="grid grid-cols-1 gap-3">
+            <div className="grid grid-cols-1 gap-3 mt-3">
+              <LivePcDisasm emu={emu} />
               <DisasmPanel
                 title="ARM9 @ entry"
                 base={emu.header.arm9EntryAddr}
@@ -905,25 +864,20 @@ export function PlayerPage() {
           )}
         </div>
       </section>
-
-      {/* Debug log — live snapshot of CPU + IRQ state for whatever is
-          running. Polls the emu via the same `tick` setState that the
-          stats panel uses, so it updates roughly twice a second. */}
-      <DebugLog emu={emu} />
     </div>
   );
 }
 
-// Compact panel showing the current ARM9/ARM7 PC, CPSR, IRQ enable/
-// pending bitmasks, and the last few interesting bus events. Renders
-// `pre`-formatted text so it's easy to copy/paste into a bug report.
+// Live debug snapshot panel. Polls the emulator twice per second so
+// the user sees motion even when the slower stats panel above is
+// caught between frame ticks. Lives in the sidebar.
 function DebugLog({ emu }: { emu: Emulator }) {
   const [, setT] = useState(0);
   useEffect(() => {
     const id = setInterval(() => setT((v) => v + 1), 500);
     return () => clearInterval(id);
   }, []);
-  const hex = (n: number, w = 8) => n.toString(16).padStart(w, '0');
+  const hex = (n: number, w = 8) => (n >>> 0).toString(16).padStart(w, '0');
   const pc9 = emu.cpu9.state.r[15] >>> 0;
   const pc7 = emu.cpu7.state.r[15] >>> 0;
   const cpsr9 = emu.cpu9.state.cpsr >>> 0;
@@ -933,33 +887,97 @@ function DebugLog({ emu }: { emu: Emulator }) {
     return ({0x10: 'usr', 0x11: 'fiq', 0x12: 'irq', 0x13: 'svc', 0x17: 'abt', 0x1B: 'und', 0x1F: 'sys'} as Record<number,string>)[m] ?? `0x${m.toString(16)}`;
   };
   const flags = (cpsr: number) => `${(cpsr>>31)&1?'N':'-'}${(cpsr>>30)&1?'Z':'-'}${(cpsr>>29)&1?'C':'-'}${(cpsr>>28)&1?'V':'-'} ${(cpsr>>7)&1?'I':'-'}${(cpsr>>6)&1?'F':'-'}${(cpsr>>5)&1?'T':'-'}`;
+
+  // Active sound channels (key-on bit set in cnt)
+  const activeSnd = emu.io7.sound.channels
+    .map((c, i) => ({ i, on: (c.cnt >>> 31) & 1, fmt: (c.cnt >> 29) & 3, vol: c.cnt & 0x7F, sad: c.sad, len: c.len, tmr: c.tmr }))
+    .filter((c) => c.on);
+
+  // Enabled DMA channels (per CPU)
+  const dmaActive = (label: 'ARM9' | 'ARM7', dma: typeof emu.dma9) =>
+    dma.channels
+      .map((c, i) => ({ i, en: c.enabled, src: c.src, dst: c.dst, count: c.countCtrl & 0x1FFFFF, timing: c.timing }))
+      .filter((c) => c.en)
+      .map((c) => `${label} DMA${c.i}: ${hex(c.src)}→${hex(c.dst)} ${c.count}w timing=${c.timing}`);
+
+  const dmaLines = [...dmaActive('ARM9', emu.dma9), ...dmaActive('ARM7', emu.dma7)];
+
   return (
-    <section className="mt-6 border border-zinc-800 rounded-lg bg-zinc-900/60 p-3 font-mono text-[11px] text-zinc-300">
-      <div className="text-xs font-semibold text-zinc-200 mb-2">Debug log</div>
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1">
+    <section className="border border-zinc-800 rounded-lg bg-zinc-900/60 p-3 font-mono text-[10px] text-zinc-300">
+      <div className="text-xs font-semibold text-zinc-200 mb-2">Live debug</div>
+
+      <div className="grid grid-cols-1 gap-y-2">
         <div>
           <div className="text-zinc-500">ARM9</div>
-          <div>PC=0x{hex(pc9)} CPSR=0x{hex(cpsr9)} ({mode(cpsr9)}, {flags(cpsr9)}) halt={emu.cpu9.state.halted ? '1' : '0'}</div>
-          <div>IE=0x{hex(emu.irq9.ie)} IF=0x{hex(emu.irq9.if_)} IME={emu.irq9.ime ? '1' : '0'}</div>
+          <div>PC=0x{hex(pc9)} {mode(cpsr9)} {flags(cpsr9)} halt={emu.cpu9.state.halted ? '1' : '0'}</div>
+          <div className="text-zinc-400">IE=0x{hex(emu.irq9.ie)} IF=0x{hex(emu.irq9.if_)} IME={emu.irq9.ime ? '1' : '0'}</div>
         </div>
         <div>
           <div className="text-zinc-500">ARM7</div>
-          <div>PC=0x{hex(pc7)} CPSR=0x{hex(cpsr7)} ({mode(cpsr7)}, {flags(cpsr7)}) halt={emu.cpu7.state.halted ? '1' : '0'}</div>
-          <div>IE=0x{hex(emu.irq7.ie)} IF=0x{hex(emu.irq7.if_)} IME={emu.irq7.ime ? '1' : '0'}</div>
+          <div>PC=0x{hex(pc7)} {mode(cpsr7)} {flags(cpsr7)} halt={emu.cpu7.state.halted ? '1' : '0'}</div>
+          <div className="text-zinc-400">IE=0x{hex(emu.irq7.ie)} IF=0x{hex(emu.irq7.if_)} IME={emu.irq7.ime ? '1' : '0'}</div>
         </div>
         <div>
-          <div className="text-zinc-500">PPU / Display</div>
-          <div>DISPCNT_A=0x{hex(emu.ppu.dispcntA)} VCount={emu.ppu.vcount} Frame={emu.ppu.frameCount}</div>
-          <div>DISPCNT_B=0x{hex(emu.ppu.dispcntB)} POWCNT1=0x{hex(emu.io9.powcnt1, 4)}</div>
+          <div className="text-zinc-500">PPU</div>
+          <div>VCount={emu.ppu.vcount} Frame={emu.ppu.frameCount}</div>
+          <div className="text-zinc-400">DISPCNT_A=0x{hex(emu.ppu.dispcntA)}</div>
+          <div className="text-zinc-400">DISPCNT_B=0x{hex(emu.ppu.dispcntB)}</div>
+          <div className="text-zinc-400">POWCNT1=0x{hex(emu.io9.powcnt1, 4)} swap={(emu.io9.powcnt1 >> 15) & 1 ? 'A→top' : 'A→bot'}</div>
         </div>
         <div>
           <div className="text-zinc-500">IPC</div>
-          <div>q9to7={emu.ipc.q9to7.size} q7to9={emu.ipc.q7to9.size}</div>
-          <div>sync9Out=0x{hex(emu.ipc.sync9Out, 1)} sync7Out=0x{hex(emu.ipc.sync7Out, 1)}</div>
+          <div>FIFO q9→7={emu.ipc.q9to7.size} q7→9={emu.ipc.q7to9.size}</div>
+          <div className="text-zinc-400">SYNC out 9/7 = {emu.ipc.sync9Out}/{emu.ipc.sync7Out}</div>
+        </div>
+        <div>
+          <div className="text-zinc-500">Sound</div>
+          {activeSnd.length === 0 ? (
+            <div className="text-zinc-400">silent (no key-on channels)</div>
+          ) : (
+            <div className="space-y-0.5">
+              {activeSnd.slice(0, 8).map((c) => (
+                <div key={c.i} className="text-zinc-400">
+                  ch{c.i.toString().padStart(2, '0')} fmt={['PCM8','PCM16','ADPCM','PSG'][c.fmt]} vol={c.vol} sad=0x{hex(c.sad)} tmr=0x{(c.tmr & 0xFFFF).toString(16)}
+                </div>
+              ))}
+              {activeSnd.length > 8 && <div className="text-zinc-500">…+{activeSnd.length - 8} more</div>}
+            </div>
+          )}
+        </div>
+        <div>
+          <div className="text-zinc-500">DMA</div>
+          {dmaLines.length === 0 ? (
+            <div className="text-zinc-400">idle</div>
+          ) : (
+            <div className="space-y-0.5">
+              {dmaLines.slice(0, 4).map((line, i) => <div key={i} className="text-zinc-400">{line}</div>)}
+              {dmaLines.length > 4 && <div className="text-zinc-500">…+{dmaLines.length - 4} more</div>}
+            </div>
+          )}
         </div>
       </div>
     </section>
   );
+}
+
+// Live disassembly at the ARM9 program counter — re-reads the last
+// few instructions every 500ms so you can watch a hot loop tick.
+function LivePcDisasm({ emu }: { emu: Emulator }) {
+  const [, setT] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setT((v) => v + 1), 500);
+    return () => clearInterval(id);
+  }, []);
+  const pc = (emu.cpu9.state.r[15] >>> 0) & ~3;
+  // Show 4 instructions ending AT pc (PC is +8 ahead during execute).
+  const base = (pc - 0xC) >>> 0;
+  let bytes: Uint8Array;
+  try {
+    bytes = emu.readBlock9(base, 16);
+  } catch {
+    return null;
+  }
+  return <DisasmPanel title="ARM9 @ live PC" base={base} bytes={bytes} highlightAt={0xC} />;
 }
 
 function paintCanvas(cnv: HTMLCanvasElement | null, fb: Uint8ClampedArray): void {
@@ -971,18 +989,18 @@ function paintCanvas(cnv: HTMLCanvasElement | null, fb: Uint8ClampedArray): void
   ctx.putImageData(img, 0, 0);
 }
 
-function DisasmPanel({ title, base, bytes }: { title: string; base: number; bytes: Uint8Array }) {
-  const rows: { addr: number; insn: number; text: string }[] = [];
+function DisasmPanel({ title, base, bytes, highlightAt }: { title: string; base: number; bytes: Uint8Array; highlightAt?: number }) {
+  const rows: { addr: number; insn: number; text: string; hot: boolean }[] = [];
   for (let i = 0; i + 4 <= bytes.length; i += 4) {
     const insn = (bytes[i] | (bytes[i + 1] << 8) | (bytes[i + 2] << 16) | (bytes[i + 3] << 24)) >>> 0;
-    rows.push({ addr: base + i, insn, text: disasmArm(insn, base + i) });
+    rows.push({ addr: base + i, insn, text: disasmArm(insn, base + i), hot: highlightAt === i });
   }
   return (
     <div className="border border-zinc-700 rounded-lg bg-zinc-900 p-3">
       <h3 className="text-xs font-semibold text-zinc-300 mb-1.5">{title}</h3>
       <div className="font-mono text-[11px] space-y-0.5">
         {rows.map((r) => (
-          <div key={r.addr} className="grid grid-cols-[8ch_8ch_1fr] gap-2">
+          <div key={r.addr} className={`grid grid-cols-[8ch_8ch_1fr] gap-2 ${r.hot ? 'bg-amber-900/40 rounded px-1 -mx-1' : ''}`}>
             <span className="text-zinc-500">{hex32(r.addr)}</span>
             <span className="text-zinc-400">{hex32(r.insn).slice(2)}</span>
             <span className="text-zinc-200">{r.text}</span>
