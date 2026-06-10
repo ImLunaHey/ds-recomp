@@ -209,6 +209,10 @@ export function App() {
   const loadFromBytes = useCallback((buf: Uint8Array, label: string) => {
     try {
       emu.loadRom(buf);
+      // RTC: switch from the deterministic test default to the actual
+      // wall clock when running interactively. Games that gate behavior
+      // on date changes (Brain Training, Pokemon) need this.
+      emu.io7.rtc.dateProvider = () => new Date();
       // Restore save data from localStorage if present. Per-ROM key so
       // each game has its own slot. base64 since localStorage is text.
       try {
