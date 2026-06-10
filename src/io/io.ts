@@ -17,6 +17,7 @@ import type { DsMath } from './ds_math';
 import type { Spi } from './spi';
 import type { BiosHle } from '../bios/hle';
 import type { Timers } from './timers';
+import { Rtc } from './rtc';
 
 export class IoBus {
   irq: Irq;
@@ -27,6 +28,8 @@ export class IoBus {
   dma: Dma;
   math: DsMath | null;     // ARM9 only — null on the ARM7 side
   spi: Spi | null;         // ARM7 only — null on the ARM9 side
+  // RTC is ARM7-side; ARM9 access is masked off in real hardware.
+  rtc: Rtc = new Rtc();
   bios: BiosHle | null = null;  // attached after Cpu construction
   timers: Timers | null = null; // wired in Emulator
   isArm9: boolean;
@@ -216,6 +219,8 @@ export class IoBus {
       case 0x04000007: return (this.ppu.vcount >>> 8) & 0x01;
       case 0x04000130: return this.keyinput & 0xFF;
       case 0x04000131: return (this.keyinput >>> 8) & 0xFF;
+      case 0x04000138: return this.rtc.read() & 0xFF;
+      case 0x04000139: return (this.rtc.read() >>> 8) & 0xFF;
       case 0x04000136: {
         // Pen-down on ARM7: bit 6 LOW = pressed. The actual touch state
         // lives on the SPI module (which the touchscreen ADC reads
@@ -424,6 +429,8 @@ export class IoBus {
       case 0x04000215: this.irq.ackIf((v & 0xFF) << 8); return;
       case 0x04000216: this.irq.ackIf((v & 0xFF) << 16); return;
       case 0x04000217: this.irq.ackIf((v & 0xFF) << 24); return;
+      case 0x04000138: this.rtc.write((this.rtc.read() & 0xFF00) | (v & 0xFF)); return;
+      case 0x04000139: this.rtc.write((this.rtc.read() & 0x00FF) | ((v & 0xFF) << 8)); return;
       case 0x04000300: this.postflg = v & 0xFF; return;
       case 0x04000304: this.powcnt1 = (this.powcnt1 & ~0xFF)         | (v & 0xFF);        return;
       case 0x04000305: this.powcnt1 = (this.powcnt1 & ~0xFF00)       | ((v & 0xFF) << 8); return;
