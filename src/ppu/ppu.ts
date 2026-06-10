@@ -248,17 +248,55 @@ export class Ppu {
   // the guard.
   private static readonly NSMB_FS_THUNK_ADDR = 0x023FF800;
 
-  // Write the shared 2-instruction ARM thunk into main RAM. Idempotent:
-  // re-running the writes every VBlank simply restores the bytes if
-  // some code (unlikely in this dead zone) trampled them.
+  // Write the shared ARM thunk into main RAM. Idempotent: re-running
+  // the writes every VBlank simply restores the bytes if some code
+  // (unlikely in this dead zone) trampled them.
+  //
+  // The thunk does two things before returning the synchronous-completion
+  // code 6 in R0:
+  //
+  //   1. Clears bit 0x200 ("operation in progress") in the FS-handle's
+  //      state word at [R0, #0x1C]. The dispatcher at 0x0206971c stamps
+  //      that bit BEFORE the BLX into our vtable slot, but on the R0=6
+  //      ("completed synchronously") branch (BEQ at 0x02069748 → B at
+  //      0x0206975c → 0x02069794) the dispatcher never clears it itself
+  //      — the only clear sites are on the R0=0 and R0=1 branches. So
+  //      when the thunk returned 6 without touching state, the handle's
+  //      +0x1C stayed "busy" forever; any later code (game frame thread,
+  //      FS_GetResultCode, FS_IsBusy, etc.) polling "is FS idle?" never
+  //      advanced. Observed: NSMB's primary "rom\0" handle state was
+  //      frozen at 0x213 (= 0x200 | 0x13) for 200+ frames after the
+  //      thunk ran. Clearing 0x200 here matches what the R0=0/R0=1
+  //      branches of the dispatcher do, so it is safe semantics for the
+  //      R0=6 path too.
+  //
+  //   2. Loads #6 into R0 and BX LR — the original synchronous-completion
+  //      return convention. R0 is the handle pointer on entry; we read
+  //      then overwrite it after the state-clear writeback completes.
+  //
+  // Layout (5 ARM instructions, 20 bytes):
+  //   00:  e5901_01c  LDR R1, [R0, #0x1C]   ; load state word
+  //   04:  e3c11c02  BIC R1, R1, #0x200    ; clear "in progress" bit
+  //   08:  e5801_01c  STR R1, [R0, #0x1C]   ; store back
+  //   0C:  e3a00006  MOV R0, #6            ; synchronous-completion code
+  //   10:  e12fff1e  BX  LR                ; return
   private writeNsmbFsThunkBody(ram: Uint8Array): void {
     const thunkOff = Ppu.NSMB_FS_THUNK_ADDR & 0x3FFFFF;
-    // MOV R0, #6  → e3a00006
-    ram[thunkOff]     = 0x06; ram[thunkOff + 1] = 0x00;
-    ram[thunkOff + 2] = 0xA0; ram[thunkOff + 3] = 0xE3;
-    // BX LR       → e12fff1e
-    ram[thunkOff + 4] = 0x1E; ram[thunkOff + 5] = 0xFF;
-    ram[thunkOff + 6] = 0x2F; ram[thunkOff + 7] = 0xE1;
+    // LDR R1, [R0, #0x1C]  → e590101c
+    ram[thunkOff +  0] = 0x1C; ram[thunkOff +  1] = 0x10;
+    ram[thunkOff +  2] = 0x90; ram[thunkOff +  3] = 0xE5;
+    // BIC R1, R1, #0x200   → e3c11c02
+    ram[thunkOff +  4] = 0x02; ram[thunkOff +  5] = 0x1C;
+    ram[thunkOff +  6] = 0xC1; ram[thunkOff +  7] = 0xE3;
+    // STR R1, [R0, #0x1C]  → e580101c
+    ram[thunkOff +  8] = 0x1C; ram[thunkOff +  9] = 0x10;
+    ram[thunkOff + 10] = 0x80; ram[thunkOff + 11] = 0xE5;
+    // MOV R0, #6           → e3a00006
+    ram[thunkOff + 12] = 0x06; ram[thunkOff + 13] = 0x00;
+    ram[thunkOff + 14] = 0xA0; ram[thunkOff + 15] = 0xE3;
+    // BX LR                → e12fff1e
+    ram[thunkOff + 16] = 0x1E; ram[thunkOff + 17] = 0xFF;
+    ram[thunkOff + 18] = 0x2F; ram[thunkOff + 19] = 0xE1;
   }
 
   // Point an FS-handle struct's vtable slot (+0x50) at our shared

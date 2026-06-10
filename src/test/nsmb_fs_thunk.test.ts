@@ -81,11 +81,21 @@ describe('NSMB NitroFS thunk', () => {
 
     tickFrame(ppu);
 
-    // Thunk body bytes: e3a00006  (MOV R0, #6)
-    //                   e12fff1e  (BX LR)
+    // Thunk body — 5 ARM instructions, see writeNsmbFsThunkBody in
+    // ppu.ts for the why. The first three clear the "in-progress"
+    // bit (0x200) of the FS handle's state word at [R0, #0x1C]; the
+    // last two load #6 into R0 and BX LR.
+    //   00: e590101c  LDR R1, [R0, #0x1C]
+    //   04: e3c11c02  BIC R1, R1, #0x200
+    //   08: e580101c  STR R1, [R0, #0x1C]
+    //   0C: e3a00006  MOV R0, #6
+    //   10: e12fff1e  BX LR
     const thunkOff = THUNK_ADDR & 0x3FFFFF;
-    expect(readU32LE(ram, thunkOff    )).toBe(0xe3a00006);
-    expect(readU32LE(ram, thunkOff + 4)).toBe(0xe12fff1e);
+    expect(readU32LE(ram, thunkOff +  0)).toBe(0xe590101c);
+    expect(readU32LE(ram, thunkOff +  4)).toBe(0xe3c11c02);
+    expect(readU32LE(ram, thunkOff +  8)).toBe(0xe580101c);
+    expect(readU32LE(ram, thunkOff + 12)).toBe(0xe3a00006);
+    expect(readU32LE(ram, thunkOff + 16)).toBe(0xe12fff1e);
     // Primary handle's +0x50 vtable slot now points at the thunk.
     expect(readU32LE(ram, 0x96114 + 0x50)).toBe(THUNK_ADDR);
   });
@@ -191,10 +201,12 @@ describe('NSMB NitroFS thunk', () => {
 
     expect(readU32LE(ram, 0x96114 + 0x50)).toBe(THUNK_ADDR);
     expect(readU32LE(ram, 0x200000 + 0x50)).toBe(THUNK_ADDR);
-    // Thunk body unchanged.
+    // Thunk body unchanged: same 5-instruction "clear bit 0x200, return 6"
+    // pattern. We only spot-check the first and last words here — the
+    // middle ones are covered by the primary-install test above.
     const thunkOff = THUNK_ADDR & 0x3FFFFF;
-    expect(readU32LE(ram, thunkOff    )).toBe(0xe3a00006);
-    expect(readU32LE(ram, thunkOff + 4)).toBe(0xe12fff1e);
+    expect(readU32LE(ram, thunkOff +  0)).toBe(0xe590101c);
+    expect(readU32LE(ram, thunkOff + 16)).toBe(0xe12fff1e);
   });
 
   it('thunk address sits inside the ARM9 bad-branch-guard accepted range', () => {
@@ -214,13 +226,23 @@ describe('NSMB NitroFS thunk', () => {
 
   it('the thunk actually executes when BLX-ed (round-trip via Cpu.step)', async () => {
     // Sets up the thunk via the normal path, then takes a CPU through
-    // a synthetic BLX into the thunk address and confirms R0 = 6 and PC
-    // returns to LR. This is the regression test for the "PC in mirror
-    // gets short-circuited by the bad-branch guard" bug.
+    // a synthetic BLX into the thunk address and confirms:
+    //   - R0 = 6 on return (synchronous-completion return code),
+    //   - PC returns to LR,
+    //   - the FS-handle's state word at [R0_in, #0x1C] had bit 0x200
+    //     cleared by the thunk's BIC sequence.
+    // This is both the regression test for the "PC in mirror gets short-
+    // circuited by the bad-branch guard" bug and coverage for the
+    // state-clear extension (which the dispatcher itself doesn't perform
+    // on the R0=6 branch — see ppu.ts writeNsmbFsThunkBody comment).
     const { Cpu } = await import('../cpu/cpu');
     const ppu = makePpu();
     const ram = ppu.mem.mainRam;
     stampHandle(ram, 0x96114, 'rom');
+    // Mirror what the real dispatcher does just before the BLX: stamp
+    // the "in-progress" bit (0x200) on top of whatever low bits the
+    // handle's own init set. NSMB observed 0x213 at this point.
+    writeU32LE(ram, 0x96114 + 0x1C, 0x00000213);
     tickFrame(ppu);
 
     // Bus9 from a fresh emulator-shaped wiring. We can't import Emulator
@@ -230,14 +252,47 @@ describe('NSMB NitroFS thunk', () => {
     const bus9 = new Bus9(ppu.mem);
     const cpu = new Cpu(bus9, true);
     cpu.reset(THUNK_ADDR, 0x0380FF00, 0x0380FFA0, 0x0380FFE0);
-    cpu.state.r[0] = 0xDEADBEEF;
+    // R0 holds the handle pointer on entry (as the dispatcher passes it).
+    cpu.state.r[0] = 0x02096114;
     const returnAddr = 0x02000000;
     cpu.state.r[14] = returnAddr;
 
-    // Two steps: MOV R0,#6 (writes R0 = 6) then BX LR (jumps to LR).
-    cpu.step();
-    cpu.step();
+    // Five steps: LDR R1,[R0,#0x1C]; BIC R1,R1,#0x200; STR R1,[R0,#0x1C];
+    // MOV R0,#6; BX LR.
+    for (let i = 0; i < 5; i++) cpu.step();
     expect(cpu.state.r[0]).toBe(6);
     expect(cpu.state.r[15] & ~3).toBe(returnAddr);
+    // Bit 0x200 must be cleared; the rest of the state word preserved.
+    expect(readU32LE(ram, 0x96114 + 0x1C)).toBe(0x00000013);
+  });
+
+  it("doesn't disturb other bits of the handle's state word", async () => {
+    // Sanity-check that the BIC mask is precisely #0x200 — neighbouring
+    // bits (in particular 0x100 and 0x400) must survive untouched.
+    const { Cpu } = await import('../cpu/cpu');
+    const { Bus9 } = await import('../memory/bus9');
+    const ppu = makePpu();
+    const ram = ppu.mem.mainRam;
+    stampHandle(ram, 0x96114, 'rom');
+    tickFrame(ppu);
+
+    const bus9 = new Bus9(ppu.mem);
+    const cpu = new Cpu(bus9, true);
+    cpu.reset(THUNK_ADDR, 0x0380FF00, 0x0380FFA0, 0x0380FFE0);
+    cpu.state.r[0] = 0x96114 + 0x02000000;
+    cpu.state.r[14] = 0x02000000;
+
+    // Set every bit *except* 0x200; thunk must leave the rest alone.
+    writeU32LE(ram, 0x96114 + 0x1C, 0xFFFFFDFF);
+    for (let i = 0; i < 5; i++) cpu.step();
+    expect(readU32LE(ram, 0x96114 + 0x1C)).toBe(0xFFFFFDFF);
+
+    // Set every bit including 0x200; thunk must clear ONLY 0x200.
+    writeU32LE(ram, 0x96114 + 0x1C, 0xFFFFFFFF);
+    cpu.reset(THUNK_ADDR, 0x0380FF00, 0x0380FFA0, 0x0380FFE0);
+    cpu.state.r[0] = 0x96114 + 0x02000000;
+    cpu.state.r[14] = 0x02000000;
+    for (let i = 0; i < 5; i++) cpu.step();
+    expect(readU32LE(ram, 0x96114 + 0x1C)).toBe(0xFFFFFDFF);
   });
 });
