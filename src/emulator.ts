@@ -19,6 +19,7 @@ import { Ipc } from './io/ipc';
 import { Dma } from './io/dma';
 import { DsMath } from './io/ds_math';
 import { Spi } from './io/spi';
+import { Timers } from './io/timers';
 import { Ppu, DOTS_PER_LINE, LINES_PER_FRAME } from './ppu/ppu';
 import { BiosHle } from './bios/hle';
 import { installBiosStubs } from './bios/stub';
@@ -40,6 +41,8 @@ export class Emulator {
   dma7: Dma;
   math = new DsMath();      // ARM9 only — ARM7 sees these registers as 0
   spi = new Spi();          // ARM7 only — ARM9 sees SPI registers as 0
+  timers9: Timers;          // 4 timers per CPU
+  timers7: Timers;
   io9: IoBus;
   io7: IoBus;
   cpu9: Cpu;
@@ -62,11 +65,15 @@ export class Emulator {
     this.cart = new Cart();
     this.dma9 = new Dma(this.bus9, this.irq9, true);
     this.dma7 = new Dma(this.bus7, this.irq7, false);
+    this.timers9 = new Timers(this.irq9);
+    this.timers7 = new Timers(this.irq7);
     this.ppu.dma9 = this.dma9;
     this.ppu.dma7 = this.dma7;
     this.ppu.ipc = this.ipc;
     this.io9 = new IoBus(this.irq9, this.ppu, this.mem, this.ipc, this.cart, this.dma9, this.math, null,     true);
     this.io7 = new IoBus(this.irq7, this.ppu, this.mem, this.ipc, this.cart, this.dma7, null,      this.spi, false);
+    this.io9.timers = this.timers9;
+    this.io7.timers = this.timers7;
     this.bus9.attachIo(this.io9);
     this.bus7.attachIo(this.io7);
     this.cpu9 = new Cpu(this.bus9, true);
@@ -141,6 +148,10 @@ export class Emulator {
         }
       }
       ppu.step(batch);
+      // Step timers per batch (dots ≈ ARM cycles in our 1:1 model).
+      // ARM7 uses the same dot budget — its prescalers divide further.
+      this.timers9.step(batch * 2);   // ARM9 runs 2× per dot in our model
+      this.timers7.step(batch);
       dotsThisFrame += batch;
       if (ppu.frameDone) { ppu.frameDone = false; break; }
     }

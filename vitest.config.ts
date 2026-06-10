@@ -3,6 +3,10 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   test: {
     include: ['src/**/*.test.ts'],
+    // Run test FILES in parallel across multiple worker threads.
+    // (Default but spelled out for clarity.)
+    pool: 'threads',
+    fileParallelism: true,
     coverage: {
       provider: 'v8',
       reporter: ['text', 'json-summary', 'lcov'],

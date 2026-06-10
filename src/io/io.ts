@@ -16,6 +16,7 @@ import type { Dma } from './dma';
 import type { DsMath } from './ds_math';
 import type { Spi } from './spi';
 import type { BiosHle } from '../bios/hle';
+import type { Timers } from './timers';
 
 export class IoBus {
   irq: Irq;
@@ -27,6 +28,7 @@ export class IoBus {
   math: DsMath | null;     // ARM9 only — null on the ARM7 side
   spi: Spi | null;         // ARM7 only — null on the ARM9 side
   bios: BiosHle | null = null;  // attached after Cpu construction
+  timers: Timers | null = null; // wired in Emulator
   isArm9: boolean;
   // POSTFLG (0x04000300) bit 0 = "boot completed". Per GBATEK: "Games
   // require it set to function." Real BIOS sets it before jumping to
@@ -145,6 +147,9 @@ export class IoBus {
       return (this.cart.readRomCtrl() >>> shift) & 0xFF;
     }
     if (addr === 0x040001A2) return this.cart.readAuxSpiData();
+    if (this.timers && addr >= 0x04000100 && addr < 0x04000110) {
+      return this.timers.read8(addr - 0x04000100);
+    }
     switch (addr) {
       case 0x04000004: return this.ppu.dispstat & 0xFF;
       case 0x04000005: return (this.ppu.dispstat >>> 8) & 0xFF;
@@ -290,6 +295,10 @@ export class IoBus {
       return;
     }
     if (addr === 0x040001A2) { this.cart.writeAuxSpiData(v & 0xFF); return; }
+    if (this.timers && addr >= 0x04000100 && addr < 0x04000110) {
+      this.timers.write8(addr - 0x04000100, v & 0xFF);
+      return;
+    }
     switch (addr) {
       case 0x04000004: this.ppu.dispstat = (this.ppu.dispstat & 0xFF00) | (v & 0xFF); return;
       case 0x04000005: this.ppu.dispstat = (this.ppu.dispstat & 0x00FF) | ((v & 0xFF) << 8); return;
