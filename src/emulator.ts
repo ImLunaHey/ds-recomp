@@ -68,6 +68,11 @@ export class Emulator {
     // receive it through their (frozen) function signatures.
     setActiveVramRouter(vramRouter);
     this.ipc = new Ipc(this.irq9, this.irq7);
+    // Retail NitroSDK games block on ARM7 PXI server replies that we
+    // don't actually run (no ARM7-side SND/MIC/WM subsystem code). Turn
+    // on the stub server so those commands get a synthesized "command
+    // complete" response and the SDK's blocked threads can advance.
+    this.ipc.pxiStubServerEnabled = true;
     this.cart = new Cart();
     this.dma9 = new Dma(this.bus9, this.irq9, true);
     this.dma7 = new Dma(this.bus7, this.irq7, false);

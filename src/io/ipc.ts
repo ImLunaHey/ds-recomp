@@ -128,6 +128,15 @@ export class Ipc {
   // slow.
   framesSinceLastSend = 0;
 
+  // When true, ARM9→ARM7 PXI commands trigger synthesized "command
+  // complete" replies on the q7to9 queue (see `processArm9Command`).
+  // Opt-in because the existing FIFO round-trip tests assume no
+  // unsolicited traffic — they enable the FIFO, push a word ARM9→ARM7,
+  // and read it back on the ARM7 side without expecting q7to9 to have
+  // grown. Retail boots flip this on via the emulator wiring; unit
+  // tests for the stub server flip it on explicitly.
+  pxiStubServerEnabled = false;
+
   constructor(irq9: Irq, irq7: Irq) {
     this.irq9 = irq9;
     this.irq7 = irq7;
@@ -238,6 +247,89 @@ export class Ipc {
     if (wasEmpty && remoteRecvNotEmptyEn) {
       remoteIrq.raise(IRQ_IPC_FIFO_NOT_EMPTY);
     }
+    // Stub PXI server: after the ARM9→ARM7 word is queued, synthesize
+    // any "command complete" reply ARM7's NitroSDK PXI server would
+    // normally produce. Gated by an explicit opt-in flag so unit tests
+    // that don't expect unsolicited q7to9 traffic stay clean.
+    if (isArm9 && !synthetic && this.pxiStubServerEnabled) {
+      this.processArm9Command(value >>> 0);
+    }
+  }
+
+  // ---- PXI stub server ----
+  // NitroSDK's PXI subsystems each run a server loop on ARM7 that
+  // consumes commands from q9to7 and pushes "command complete" replies
+  // back on q7to9. We don't model those servers — we just queue the
+  // single reply word the SDK's command-dispatcher needs to see in
+  // order to mark its outstanding request as finished and wake the
+  // ARM9-side caller (typically a thread blocked on OS_SleepThread()
+  // until the reply IRQ runs the per-tag callback).
+  //
+  // Patterns identified from boot traces of retail games:
+  //
+  //   0xC0 — SND / SNDi. Pokemon Platinum batches four SND commands
+  //     per VBlank (0xC0080004, 0x80088084, 0x00470E84, 0x40A00004 in
+  //     the same frame). ARM7 normally echoes each command back with a
+  //     bit set to indicate completion. We mirror the command word
+  //     unchanged — the existing `normalizePxiReply` path strips
+  //     bit 21 anyway, so the receiver sees a clean "done" word.
+  //
+  //   0x80 — MIC. Same shape as SND: echo back, normalize strips the
+  //     busy bit.
+  //
+  //   0x40 — WM (wireless manager) commands sent from the ARM9 side
+  //     during the early SDK init.
+  //
+  //   0x05 — WM init handshake. Meteos sends a single 0x0501504D word
+  //     and sits in a poll waiting for ARM7's reply. The reply byte
+  //     pattern observed on real hardware is the command word with the
+  //     low bit set (a "command accepted" ack).
+  //
+  //   0x00 — SYSTEM tag. Nintendogs sends 0x00040005 and expects
+  //     0x00040025 back (bit 5 of the low byte = completion). We don't
+  //     blindly echo for SYSTEM because the SYSTEM tag covers a wide
+  //     command space — we match the specific shape we know about.
+  private processArm9Command(value: number): void {
+    const tag = (value >>> 24) & 0xFF;
+    switch (tag) {
+      case 0xC0:
+      case 0x80:
+      case 0x40:
+        // Echo the command back. normalizePxiReply on the writeSend
+        // path strips the documented busy bit for tags 0xC0/0x80/0x40,
+        // so the receiver sees a completion-shaped reply without us
+        // having to know the exact "OK" bit for each subsystem.
+        this.queueArm7Reply(value);
+        return;
+      case 0x05:
+        // WM init ack — low bit set on the echoed command word.
+        this.queueArm7Reply((value | 0x01) >>> 0);
+        return;
+      case 0x00:
+        // Only synthesize for the Nintendogs-shaped SYSTEM command
+        // (0x000400xx — "init service 0x04"). For these, real ARM7
+        // sets bit 5 of the low byte to signal completion. Other
+        // SYSTEM-tag commands carry their own protocol and we leave
+        // them for the real handshake (or other heuristics) to
+        // resolve.
+        if ((value & 0x00FF0000) === 0x00040000) {
+          this.queueArm7Reply((value | 0x00000020) >>> 0);
+        }
+        return;
+      default:
+        return;
+    }
+  }
+
+  // Push a synthetic ARM7→ARM9 reply word. Goes through writeSend with
+  // `synthetic=true` so it doesn't flip the realFifoTrafficSeen /
+  // framesSinceLastSend bookkeeping — those track real game traffic so
+  // the PPU deadlock heartbeat stays accurate. The normal writeSend
+  // path also handles the empty→non-empty IRQ on ARM9 and the
+  // PXI reply normalization, so we don't need to duplicate either.
+  private queueArm7Reply(value: number): void {
+    if (!this.enable7) return;
+    this.writeSend(false, value >>> 0, true);
   }
 
   // ---- FIFO RECV ----
