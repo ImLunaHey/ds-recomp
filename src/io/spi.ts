@@ -57,6 +57,30 @@ export class Spi {
   // language) are non-garbage.
   firmware: Uint8Array;
 
+  // Microphone sample latch. The TSC2046 AUX channel (6) is wired to
+  // the DS microphone preamp on real hardware. ARM7 SDK routines (e.g.
+  // Brain Training's "say a word" detector) issue control bytes with
+  // channel select = 6 to read mic samples. Tests / UI can poke this
+  // field directly to feed the emulator synthetic audio; default is
+  // the 12-bit ADC midpoint (0x800 = silence).
+  micSample = 0x800;
+
+  // Power-management chip register file. The PM chip (device 0) has a
+  // tiny internal register space accessed by a 1-byte command byte
+  // (bit 7 = R/W flag, bits 0-6 = register index) followed by 1+ data
+  // bytes. Layout per GBATEK §"DS Power Management":
+  //   reg 0: control — sound enable / LCD enable / lower-LCD enable / LED
+  //   reg 1: backlight enable (bit 0 = top, bit 1 = bottom on DS-lite)
+  //   reg 2: amplifier on/off
+  //   reg 3: amplifier mute
+  //   reg 4: backlight brightness, top screen (DSi-style)
+  //   reg 5: backlight brightness, bottom screen (DSi-style)
+  // Real bring-up code writes reg 0 = 0x0D early (sound + both LCDs on).
+  pmRegs = new Uint8Array(8);
+  // PM transaction scratch. Set when the first byte of a PM transaction
+  // is latched; bit 7 of the command tells us read vs. write.
+  private pmCmd = 0;
+
   constructor() {
     this.firmware = new Uint8Array(0x80000);   // 512 KB to match retail DS firmware
     this.initFirmware();
@@ -273,6 +297,10 @@ export class Spi {
       if (ch === 1) return 0xFFF;     // Y reads max when not touched
       if (ch === 3) return 0xFFF;     // Z1 = high impedance / no pressure
       if (ch === 4) return 0x000;     // Z2 = no pressure
+      // AUX (mic) reads even when no touch — it's wired to the
+      // microphone preamp, not the touch matrix. Return the current
+      // mic sample latch.
+      if (ch === 6) return this.micSample & 0xFFF;
       return 0x000;
     }
     if (ch === 1) {
@@ -289,15 +317,36 @@ export class Spi {
       const t = (this.touchX! - pxLow) / (pxHigh - pxLow);
       return Math.max(0, Math.min(0xFFF, Math.round(adcLow + t * (adcHigh - adcLow))));
     }
-    if (ch === 3) return 0x100;     // Z1 = low value = strong touch
-    if (ch === 4) return 0xF00;     // Z2 = high value = strong touch
+    // Z1/Z2 pressure varies with contact position on a real resistive
+    // panel — touches near the panel center read different pressure
+    // than near the edges. We approximate by biasing Z1/Z2 by the
+    // distance of touchX from the panel midpoint (px 128). Brain
+    // Training and a few other SDK games take this variation as part
+    // of their touch fingerprint (constant Z reads look like a stuck
+    // probe and are sometimes rejected).
+    if (ch === 3) return 0x100 + Math.abs(this.touchX! - 128);
+    if (ch === 4) return 0xE00 + Math.abs(this.touchX! - 128);
+    // AUX (mic) — same source as the no-touch case.
+    if (ch === 6) return this.micSample & 0xFFF;
     return 0x000;
   }
 
   private tickPowerManagement(byte: number): number {
-    // PM chip — register read/write. We treat all registers as zero.
-    // Real layout has bits for sound enable, LCD enable, LED, etc.
-    void byte;
+    // PM chip register interface. Byte 0 is the command:
+    //   bit 7 = R/W flag (0 = write, 1 = read)
+    //   bits 0-6 = register index
+    // Byte 1 is the data byte (write: store; read: returned). Bytes 2+
+    // continue with the same register — the SDK doesn't typically chain
+    // multi-byte transfers here, but we honor whatever is asked.
+    if (this.bytePos === 0) {
+      this.pmCmd = byte;
+      return 0x00;
+    }
+    const reg = this.pmCmd & 0x7F;
+    const isRead = (this.pmCmd & 0x80) !== 0;
+    if (reg >= this.pmRegs.length) return 0x00;
+    if (isRead) return this.pmRegs[reg];
+    this.pmRegs[reg] = byte & 0xFF;
     return 0x00;
   }
 
@@ -306,6 +355,7 @@ export class Spi {
     this.fwCmd = 0;
     this.fwAddr = 0;
     this.tscChannel = 0;
+    this.pmCmd = 0;
   }
 }
 
