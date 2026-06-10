@@ -168,6 +168,16 @@ export class Ipc {
     const enable = isArm9 ? this.enable9 : this.enable7;
     if (!enable) return;
     if (!synthetic) { this.realFifoTrafficSeen = true; this.framesSinceLastSend = 0; }
+    // NitroSDK SNDi PXI reply stub: ARM7's sound thread sets bit 21
+    // ("NG / busy") in the response when its sound system isn't
+    // initialized. Without a real PXI sound-thread model on ARM7, that
+    // bit stays set forever and ARM9 retries the SNDi init command
+    // every VBlank IRQ — Tetris DS spends 160+ frames in this loop.
+    // Strip bit 21 on ARM7→ARM9 words whose top byte is 0xC0 (the
+    // SNDi PXI tag) so ARM9 sees init complete.
+    if (!isArm9 && (value & 0xFF000000) >>> 0 === 0xC0000000) {
+      value = (value & ~0x00200000) >>> 0;
+    }
     const q = isArm9 ? this.q9to7 : this.q7to9;
     const remoteRecvNotEmptyEn = isArm9 ? this.recvNotEmptyIrqEn7 : this.recvNotEmptyIrqEn9;
     const remoteIrq = isArm9 ? this.irq7 : this.irq9;
