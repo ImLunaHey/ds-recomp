@@ -90,6 +90,13 @@ export class Cart {
   sav: Uint8Array = (() => { const a = new Uint8Array(0x100000); a.fill(0xFF); return a; })();
   savDirty = false;
   private savCmd = 0;
+  // Status-register bits 2..7 (block protect + SRWD), writable via WRSR
+  // (cmd 0x01). Real SPI chips persist these; RDSR (cmd 0x05) returns
+  // them OR'd with the WEL/WIP state. Simpsons Game tests chip
+  // functionality by WREN → WRSR(0xF0) → RDSR (expecting 0xF0 back);
+  // without persisting we always returned 0, the test failed, and the
+  // game showed "Save data could not be accessed" on the title screen.
+  private savStatusUserBits = 0;
   private savAddr = 0;
   private savAddrBytes = 0;             // address bytes received in current tx
   private savBytePos = 0;               // overall byte index in current tx
@@ -155,6 +162,15 @@ export class Cart {
     // was left deferred without delivering its final byte, just reset
     // — no chance to ever deliver it now.
     if (!this.auxHold && newHold) {
+      // PAGE PROGRAM (0x02) and WRSR (0x01) auto-clear WEL when the
+      // chip "executes" the command on CS rising-edge. Real SPI chips
+      // do this at the end of the program/erase cycle; we treat it as
+      // instantaneous so the clear happens on CS release. Some save
+      // drivers (e.g. Simpsons Game's) poll RDSR after the write
+      // expecting WEL=0 to confirm completion.
+      if (this.savCmd === 0x02 || this.savCmd === 0x0A || this.savCmd === 0x01) {
+        this.savWriteEnabled = false;
+      }
       this.savCmd = 0;
       this.savAddrBytes = 0;
       this.savBytePos = 0;
@@ -204,18 +220,20 @@ export class Cart {
     }
     switch (this.savCmd) {
       case 0x05: {                                       // RDSR
-        // Bits 0,1 = WIP, WEL. We're never busy; report WEL state.
-        // High bits 4-7 = block-protect + status-reg-write-disable.
-        // We must return 0 there: ORing 0xF0 made the chip look fully
-        // write-protected, which Simpsons Game interpreted as "save
-        // chip inaccessible" and displayed "data could not be
-        // accessed" on the title screen instead of booting normally.
-        return this.savWriteEnabled ? 0x02 : 0x00;
+        // bit 0 = WIP (always 0 — never busy)
+        // bit 1 = WEL (from savWriteEnabled)
+        // bits 2..7 = block-protect / SRWD (writable via WRSR, default 0)
+        return (this.savStatusUserBits & 0xFC) | (this.savWriteEnabled ? 0x02 : 0x00);
       }
       case 0x06: this.savWriteEnabled = true;  return 0xFF;   // WREN
       case 0x04: this.savWriteEnabled = false; return 0xFF;   // WRDI
       case 0x01: {                                       // WRSR
-        // Status reg write — accept silently, ignore protect bits.
+        // Status reg write — bits 2..7 are user-writable. WEL is
+        // cleared after a successful WRSR (real chip semantics).
+        if (this.savWriteEnabled) {
+          this.savStatusUserBits = byte & 0xFC;
+          this.savWriteEnabled = false;
+        }
         return 0xFF;
       }
       case 0x03: case 0x0B: {                            // READ / READ_HI
