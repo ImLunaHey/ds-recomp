@@ -27,6 +27,55 @@ const CNT_RECV_NOT_EMPTY_IRQ_EN = 0x0400;
 const CNT_ERROR             = 0x4000;
 const CNT_ENABLE            = 0x8000;
 
+// PXI reply-normalization table. Each entry pairs a NitroSDK subsystem
+// tag (the high byte of an ARM7→ARM9 PXI word) with the busy / NG bit
+// mask we strip on the reply. The masks come from observing real
+// retail ROMs (Tetris DS, Pokemon Platinum, Nintendogs) where ARM7's
+// stub responses leave those bits set indefinitely, causing ARM9 to
+// poll-retry forever. Stripping them lets ARM9 observe a "success"
+// completion without us needing to model each subsystem on ARM7.
+//
+//   0xC0 — SND (SNDi): bit 21 = NG (sound thread not yet initialized).
+//   0x80 — MIC / SYSTEM-extended: bit 5 = busy on the early init reply.
+//   0x40 — WM (wireless manager): bit 5 = busy on radio init replies.
+//   0x00 — SYSTEM: bit 5 = busy on the early system-init reply that
+//          Nintendogs hammers tens of thousands of times. The system
+//          tag is also used for the periodic ARM7→ARM9 heartbeat tick
+//          (e.g. Pokemon Platinum's 0x0000006B counter), where bit 5
+//          happens to be a real payload bit we MUST NOT strip — so we
+//          gate the 0x00-tag strip on the message having a non-empty
+//          upper-payload byte (bits 16..23). That distinguishes a
+//          tagged subsystem command from a small numeric tick.
+//
+// The keys are the literal top byte, not a 6-bit "tag" — NitroSDK
+// formats are inconsistent across SDK versions, and the high-byte view
+// is what matches our captures.
+const PXI_REPLY_BUSY_BITS: Record<number, number> = {
+  0xC0: 0x00200000,
+  0x80: 0x00000020,
+  0x40: 0x00000020,
+  0x00: 0x00000020,
+};
+
+// Tags that require an extra structural guard before we strip — the
+// strip only fires if the value has any bits set in payload bits
+// 16..23 (the "command-class" byte for tagged PXI messages).
+const PXI_REPLY_TAG_GUARDED: Record<number, true> = {
+  0x00: true,
+};
+
+export function normalizePxiReply(value: number): number {
+  const tag = (value >>> 24) & 0xFF;
+  const mask = PXI_REPLY_BUSY_BITS[tag];
+  if (mask === undefined) return value >>> 0;
+  if (PXI_REPLY_TAG_GUARDED[tag] && ((value & 0x00FF0000) >>> 0) === 0) {
+    // Looks like a bare numeric tick (heartbeat / sync counter), not
+    // a tagged command. Leave untouched.
+    return value >>> 0;
+  }
+  return (value & ~mask) >>> 0;
+}
+
 class Queue {
   buf = new Uint32Array(FIFO_CAPACITY);
   head = 0;
@@ -168,16 +217,20 @@ export class Ipc {
     const enable = isArm9 ? this.enable9 : this.enable7;
     if (!enable) return;
     if (!synthetic) { this.realFifoTrafficSeen = true; this.framesSinceLastSend = 0; }
-    // NitroSDK SNDi PXI reply stub: ARM7's sound thread sets bit 21
-    // ("NG / busy") in the response when its sound system isn't
-    // initialized. Without a real PXI sound-thread model on ARM7, that
-    // bit stays set forever and ARM9 retries the SNDi init command
-    // every VBlank IRQ — Tetris DS spends 160+ frames in this loop.
-    // Strip bit 21 on ARM7→ARM9 words whose top byte is 0xC0 (the
-    // SNDi PXI tag) so ARM9 sees init complete.
-    if (!isArm9 && (value & 0xFF000000) >>> 0 === 0xC0000000) {
-      value = (value & ~0x00200000) >>> 0;
-    }
+    // PXI reply normalization. NitroSDK's command/reply protocol uses
+    // the top byte of the 32-bit word as a "subsystem tag", and ARM7's
+    // subsystem stubs set busy / NG indicator bits in the reply when
+    // they are not initialized or are still processing. Without
+    // accurate ARM7-side models for each subsystem, those bits stay
+    // set forever and ARM9 retries the command every VBlank IRQ —
+    // Tetris DS spends 160+ frames in this loop on SNDi (tag 0xC0).
+    //
+    // The same pattern shows up across other tags: Nintendogs hammers
+    // the SYSTEM tag (0x00) with bit-5 set in every reply, Pokemon
+    // Platinum's WM (0x40) / MIC (0x80) replies similarly carry stale
+    // busy bits. We normalize ARM7→ARM9 words by tag-byte, stripping
+    // the documented "NG / busy" bit so ARM9 sees a clean completion.
+    if (!isArm9) value = normalizePxiReply(value);
     const q = isArm9 ? this.q9to7 : this.q7to9;
     const remoteRecvNotEmptyEn = isArm9 ? this.recvNotEmptyIrqEn7 : this.recvNotEmptyIrqEn9;
     const remoteIrq = isArm9 ? this.irq7 : this.irq9;
