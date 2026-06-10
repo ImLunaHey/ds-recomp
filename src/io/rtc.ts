@@ -48,6 +48,23 @@ export class Rtc {
   resp: number[] = [];
   respIdx = 0;
 
+  // Master-write buffer: bytes shifted in MSB-first after the cmd byte.
+  // wrBits counts bits accumulated into wrCur; once 8 are gathered the
+  // full byte is pushed into wrBytes and committed on SEL falling edge.
+  wrBits = 0;
+  wrCur = 0;
+  wrBytes: number[] = [];
+
+  // Persistent register state (writable via cmd-byte bit 7 = 0).
+  // Defaults model a fresh chip: 24-hour mode, no alarm-enable bits,
+  // no pending alarm interrupts. Alarm/free/clk-adj zeroed.
+  status1 = 0x02;             // bit 1 = 24-hr mode
+  status2 = 0x00;             // alarm interrupt sources
+  alarm1: number[] = [0, 0, 0];
+  alarm2: number[] = [0, 0, 0];
+  clkAdj = 0x00;
+  freeReg = 0x00;
+
   // Date source — defaults to a fixed deterministic date so tests are
   // reproducible. Replace with a callback that returns the host clock
   // when running interactively from the browser UI.
@@ -67,6 +84,9 @@ export class Rtc {
       this.byteReady = false;
       this.resp = [];
       this.respIdx = 0;
+      this.wrBits = 0;
+      this.wrCur = 0;
+      this.wrBytes = [];
     }
 
     // CLK rising edge AND chip selected — sample/shift a bit.
@@ -79,10 +99,17 @@ export class Rtc {
           this.byteReady = true;
           if ((this.cmd & 0x80) !== 0) this.prepareResponse();
         }
-      } else if (writingData) {
-        // Master writing data after the cmd byte — currently no-op
-        // (we don't persist time-set / status writes). Bit is on bit 0.
-        void value;
+      } else if ((this.cmd & 0x80) === 0) {
+        // Cmd byte R/W bit = 0 → master writing data. Shift MSB-first
+        // into wrCur; once 8 bits land, push a complete byte and reset.
+        void writingData; // direction is informational only here.
+        this.wrCur = ((this.wrCur << 1) & 0xFF) | (value & 1);
+        this.wrBits++;
+        if (this.wrBits === 8) {
+          this.wrBytes.push(this.wrCur);
+          this.wrCur = 0;
+          this.wrBits = 0;
+        }
       } else {
         // Master reading data — return next response bit on bit 0.
         const byteIdx = (this.respIdx / 8) | 0;
@@ -94,8 +121,12 @@ export class Rtc {
       }
     }
 
-    // SEL falling edge — end of transaction; preserve no state.
+    // SEL falling edge — end of transaction; commit any captured write
+    // bytes to the addressed register, then clear assembly state.
     if (!newSel && this.selHigh) {
+      if (this.byteReady && (this.cmd & 0x80) === 0 && this.wrBytes.length > 0) {
+        this.commitWrite();
+      }
       this.byteReady = false;
     }
 
@@ -113,10 +144,13 @@ export class Rtc {
     switch (cmdIdx) {
       case 0:   // STATUS1
         // Bit 1 = 24-hr mode (1), other bits 0 = no power-loss, no errors.
-        this.resp = [0x02];
+        // Returned from persisted state so prior writes (e.g. INT1E/INT2E
+        // enable bits) round-trip on subsequent reads.
+        this.resp = [this.status1 & 0xFF];
         break;
       case 1:   // STATUS2
-        this.resp = [0x00];
+        // Holds alarm interrupt-source bits per GBATEK.
+        this.resp = [this.status2 & 0xFF];
         break;
       case 2:   // DATE+TIME (7 bytes: yr, mo, day, dow, hr, min, sec)
         this.resp = [
@@ -136,8 +170,53 @@ export class Rtc {
           bcd(now.getSeconds()),
         ];
         break;
-      default:  // alarms, clock-adjust, free — return zeros
-        this.resp = [0x00, 0x00, 0x00];
+      case 4:   // ALARM1 — 3 bytes (dow+enable / hour+pm / minute). One-shot.
+        this.resp = [this.alarm1[0]!, this.alarm1[1]!, this.alarm1[2]!];
+        break;
+      case 5:   // ALARM2 — 3 bytes, same format as ALARM1. Repeating.
+        this.resp = [this.alarm2[0]!, this.alarm2[1]!, this.alarm2[2]!];
+        break;
+      case 6:   // CLK_ADJ — 1 byte (signed 6-bit + sign, frequency trim).
+        this.resp = [this.clkAdj & 0xFF];
+        break;
+      case 7:   // FREE — 1 byte general-purpose register.
+        this.resp = [this.freeReg & 0xFF];
+        break;
+      default:  // unreachable: cmdIdx is masked to 0..7.
+        this.resp = [0x00];
+        break;
+    }
+  }
+
+  // Persist a master-write transaction. The host may have shifted in
+  // fewer bytes than the canonical register width (the S3511 simply
+  // accepts whatever it gets); we update only the bytes provided so
+  // partial writes still round-trip cleanly.
+  private commitWrite(): void {
+    const cmdIdx = (this.cmd >> 4) & 0x7;
+    const b = this.wrBytes;
+    switch (cmdIdx) {
+      case 0:   // STATUS1
+        if (b.length >= 1) this.status1 = b[0]! & 0xFF;
+        break;
+      case 1:   // STATUS2
+        if (b.length >= 1) this.status2 = b[0]! & 0xFF;
+        break;
+      case 2:   // DATE+TIME — host time is authoritative; ignore writes.
+        break;
+      case 3:   // TIME — host time is authoritative; ignore writes.
+        break;
+      case 4:   // ALARM1
+        for (let i = 0; i < Math.min(b.length, 3); i++) this.alarm1[i] = b[i]! & 0xFF;
+        break;
+      case 5:   // ALARM2
+        for (let i = 0; i < Math.min(b.length, 3); i++) this.alarm2[i] = b[i]! & 0xFF;
+        break;
+      case 6:   // CLK_ADJ
+        if (b.length >= 1) this.clkAdj = b[0]! & 0xFF;
+        break;
+      case 7:   // FREE
+        if (b.length >= 1) this.freeReg = b[0]! & 0xFF;
         break;
     }
   }
