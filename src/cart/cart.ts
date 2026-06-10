@@ -35,6 +35,28 @@ const PHASE_RAW = 0;
 const PHASE_KEY1 = 1;
 const PHASE_KEY2 = 2;
 
+// Per-game save-chip address size override. DS games hardcode their
+// expected chip in the SDK save driver — there's no JEDEC ID probe.
+// Default (when a game isn't listed) is 3-byte FLASH, which works
+// for most modern DS titles (Pokemon, NSMB, Brain Training, etc.).
+// Games listed here use shorter address protocols:
+//   1 = EEPROM 0.5K (1-byte addr + 0x0A/0x0B half-cmds)
+//   2 = EEPROM 8K..64K / FRAM 256K (2-byte addr)
+//   3 = FLASH 256K..8M (3-byte addr — default, not listed)
+//
+// Entries derived empirically by tracing the game's save-driver
+// command pattern. If the address bytes the game sends bleed into
+// data (e.g. ASCII text appears where the third address byte should
+// be), the chip is smaller than we assumed.
+const SAV_ADDR_SIZE_BY_GAME_CODE: Record<string, number> = {
+  // The Simpsons Game (USA) — writes "SIMPSONS DS" header at addr 0,
+  // 1-byte address. With 3-byte default, the first 3 bytes of the
+  // intended data ("SI") were eaten as address bytes and the
+  // verification-read returned the wrong content. Game then showed
+  // "Save data could not be accessed" on its title screen.
+  YSZE: 1,
+};
+
 export class Cart {
   rom: Uint8Array = new Uint8Array(0);
 
@@ -101,7 +123,7 @@ export class Cart {
   private savAddrBytes = 0;             // address bytes received in current tx
   private savBytePos = 0;               // overall byte index in current tx
   private savWriteEnabled = false;
-  private savAddrSize = 3;              // auto-detect: assume 3 until proven less
+  private savAddrSize = 3;              // looked up from gameCode in loadRom()
   // Whether the SDK driver is asserting CS hold (AUXSPICNT bit 6 was 1
   // on the last write; released on transition 1 → 0).
   private auxHold = false;
@@ -131,7 +153,19 @@ export class Cart {
     this.savAddrBytes = 0;
     this.savBytePos = 0;
     this.savWriteEnabled = false;
-    this.savAddrSize = 3;
+    // Save address size depends on the chip type. DS chips:
+    //   EEPROM 0.5K (4 Kbit)    → 1-byte addr (with 0x0A/0x0B half-cmds)
+    //   EEPROM 8K..64K          → 2-byte addr
+    //   FRAM 256K               → 2-byte addr
+    //   FLASH 256K..8M          → 3-byte addr
+    // The SDK driver picks the protocol based on the cart's
+    // hardcoded type, not by querying the chip — there's no JEDEC ID
+    // probe in most DS games. We read the 4-char gameCode from the
+    // ROM header (offset 0x0C) and look up our small per-game table.
+    // Unknown codes default to 3-byte FLASH addressing (the most
+    // common modern-DS layout). Each entry: gameCode → addrSize.
+    const gameCode = new TextDecoder().decode(rom.subarray(0x0C, 0x10));
+    this.savAddrSize = SAV_ADDR_SIZE_BY_GAME_CODE[gameCode] ?? 3;
     this.auxHold = false;
     this.auxToBackup = false;
     this.auxOut = 0xFF;

@@ -108,7 +108,7 @@ const BUILTIN_ROMS = [
   { label: 'Tetris DS',         path: '/Tetris DS.nds',                                    kind: 'retail', hint: '🟡' },
   { label: 'Cars',              path: '/Cars (USA).nds',                                   kind: 'retail', hint: '🟡' },
   { label: 'Spirit Tracks',     path: '/Legend of Zelda, The - Spirit Tracks (USA) (En,Fr,Es) (Rev 1).nds', kind: 'retail', hint: '🟡' },
-  { label: 'Simpsons Game',     path: '/Simpsons Game, The (USA).nds',                     kind: 'retail', hint: '🟡' },
+  { label: 'Simpsons Game',     path: '/Simpsons Game, The (USA).nds',                     kind: 'retail', hint: '🟢' },
   { label: 'Sonic Rush Adv.',   path: '/Sonic Rush Adventure (USA) (En,Ja,Fr,De,Es,It).nds', kind: 'retail', hint: '🟡' },
   { label: 'Toy Story 3',       path: '/Toy Story 3 (USA) (En,Fr,Es) (NDSi Enhanced).nds', kind: 'retail', hint: '🟡' },
   // Retail — stalls or panics very early
