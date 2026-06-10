@@ -175,6 +175,33 @@ export class Ppu {
     this.nsmbThunkInstalled = true;
   }
 
+  // Findings from deeper RE of NSMB's main game task (entry 0x0206F1FC,
+  // TCB 0x02096324):
+  //
+  // The task body loops waiting for bit 3 (= 0x8) of the field at
+  // 0x020963F4 (= the game's "main controller struct" + 0x114). When
+  // bit 3 is set, the task does:
+  //   - BL 0x020F2240 (some work function)
+  //   - LDR R1, [R5, +0x40]  ← function pointer at 0x02096320
+  //   - BLX R1               ← calls registered frame-callback
+  //   - B back to inner loop
+  //
+  // Both the bit-3 flag AND the function pointer at 0x02096320 are
+  // expected to be set by NSMB's NitroMain post-OS_CreateThread setup.
+  // In our boot, only OS_CreateThread runs; the post-setup is skipped
+  // because the SDK's "switch to the new thread" handoff never fires
+  // (we never find where NitroMain calls OS_RunThread, if it does).
+  //
+  // From-emulator setting the bit + a stub function pointer DOES make
+  // ARM9 reach the BLX call and execute through the loop, but the
+  // stub doesn't actually do per-frame rendering — that requires
+  // NSMB's actual frame-update function whose address we'd need
+  // source/symbols to identify. The work isn't bounded by emulator
+  // emulator effort; it's a strict RE problem.
+  //
+  // Documenting the polled-flag location + function-pointer slot for
+  // the next session's RE work. No code change here.
+
   // Pokemon Platinum: ARM9's THUMB validation routine at 0x02024370
   // bzero's 0x027FF000-0x027FF01C, then writes "ADAJ" ("ADAJ" = ASCII
   // 0x4A414441 = Pokemon's IPL ROM signature) to 0x027FF00C, then a
