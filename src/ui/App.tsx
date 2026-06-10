@@ -7,18 +7,28 @@ import { SCREEN_W, SCREEN_H } from '../ppu/ppu';
 
 // Built-in ROMs that ship in public/. The .nds files themselves are
 // gitignored — users add their own copies.
+// ROM list grouped into Retail (commercial games) and Tests (homebrew /
+// targeted PPU regression demos). Each entry can carry an emoji hint of
+// how far the game currently boots in our emulator — "🟢" = visible
+// title/content, "🟡" = boots past SDK init / runs internal state but
+// no visible content, "🔴" = stalls or panics very early. Hints are
+// best-effort snapshots and will drift as fixes land.
 const BUILTIN_ROMS = [
-  { label: 'Brain Training',    path: '/Brain Training.nds' },
-  { label: 'Tetris DS',         path: '/Tetris DS.nds' },
-  { label: 'Super Mario 64 DS', path: '/Super Mario 64 DS.nds' },
-  { label: 'Meteos',            path: '/Meteos.nds' },
-  { label: 'Pokemon Platinum',  path: '/Pokemon - Platinum Version (USA) (Rev 1).nds' },
-  { label: 'New Super Mario',   path: '/New Super Mario Bros.nds' },
-  { label: 'Nintendogs',        path: '/Nintendogs - Labrador.nds' },
-  { label: 'RockWrestler',      path: '/rockwrestler.nds' },
-  { label: 'obj mosaic',        path: '/test_obj_mosaic.nds' },
-  { label: 'obj priority',      path: '/test_obj_prio.nds' },
-  { label: 'obj mosaic fuzz',   path: '/test_obj_mos_fuzz.nds' },
+  // Retail
+  { label: 'Super Mario 64 DS', path: '/Super Mario 64 DS.nds',                            kind: 'retail', hint: '🟢' },
+  { label: 'Brain Training',    path: '/Brain Training.nds',                               kind: 'retail', hint: '🟢' },
+  { label: 'LEGO Star Wars',    path: '/LEGO Star Wars - The Complete Saga (USA).nds',     kind: 'retail', hint: '🟡' },
+  { label: 'Pokemon Platinum',  path: '/Pokemon - Platinum Version (USA) (Rev 1).nds',     kind: 'retail', hint: '🟡' },
+  { label: 'Pokemon HeartGold', path: '/Pokemon - HeartGold Version (USA).nds',            kind: 'retail', hint: '🟡' },
+  { label: 'NSMB',              path: '/New Super Mario Bros.nds',                         kind: 'retail', hint: '🟡' },
+  { label: 'Nintendogs',        path: '/Nintendogs - Labrador.nds',                        kind: 'retail', hint: '🟡' },
+  { label: 'Tetris DS',         path: '/Tetris DS.nds',                                    kind: 'retail', hint: '🟡' },
+  { label: 'Meteos',            path: '/Meteos.nds',                                       kind: 'retail', hint: '🔴' },
+  // Homebrew / PPU regression tests
+  { label: 'RockWrestler',      path: '/rockwrestler.nds',                                 kind: 'test',   hint: '' },
+  { label: 'obj mosaic',        path: '/test_obj_mosaic.nds',                              kind: 'test',   hint: '' },
+  { label: 'obj priority',      path: '/test_obj_prio.nds',                                kind: 'test',   hint: '' },
+  { label: 'obj mosaic fuzz',   path: '/test_obj_mos_fuzz.nds',                            kind: 'test',   hint: '' },
 ] as const;
 const STORAGE_KEY_ROM = 'ds-recomp:selectedRom';
 function pickInitialRom(): string {
@@ -522,24 +532,50 @@ export function App() {
           loadFromBytes(new Uint8Array(await f.arrayBuffer()), f.name);
         }}
       >
-        <div className="flex items-center gap-2 mb-2">
-          <span className="text-xs text-zinc-400">Built-in:</span>
-          {BUILTIN_ROMS.map((r) => (
-            <button
-              key={r.path}
-              className={`px-2 py-1 rounded text-xs border ${
-                src === r.path
-                  ? 'bg-emerald-700 border-emerald-500 text-white'
-                  : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:bg-zinc-700'
-              }`}
-              onClick={() => loadBuiltin(r.path)}
-            >
-              {r.label}
-            </button>
-          ))}
+        <div className="mb-3">
+          <div className="text-xs text-zinc-400 mb-1">Retail games</div>
+          <div className="flex flex-wrap gap-1.5">
+            {BUILTIN_ROMS.filter((r) => r.kind === 'retail').map((r) => (
+              <button
+                key={r.path}
+                className={`px-2 py-1 rounded text-xs border whitespace-nowrap ${
+                  src === r.path
+                    ? 'bg-emerald-700 border-emerald-500 text-white'
+                    : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:bg-zinc-700'
+                }`}
+                title={r.path}
+                onClick={() => loadBuiltin(r.path)}
+              >
+                {r.hint && <span className="mr-1">{r.hint}</span>}
+                {r.label}
+              </button>
+            ))}
+          </div>
         </div>
-        <p className="text-xs text-zinc-400 mb-2">…or drag a <code>.nds</code> here.</p>
-        <p className="text-xs text-zinc-500">Currently loaded: <code className="text-zinc-300">{src}</code></p>
+        <div className="mb-2">
+          <div className="text-xs text-zinc-400 mb-1">Tests / homebrew</div>
+          <div className="flex flex-wrap gap-1.5">
+            {BUILTIN_ROMS.filter((r) => r.kind === 'test').map((r) => (
+              <button
+                key={r.path}
+                className={`px-2 py-1 rounded text-xs border whitespace-nowrap ${
+                  src === r.path
+                    ? 'bg-emerald-700 border-emerald-500 text-white'
+                    : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:bg-zinc-700'
+                }`}
+                title={r.path}
+                onClick={() => loadBuiltin(r.path)}
+              >
+                {r.label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <p className="text-xs text-zinc-400 mb-1">…or drag a <code>.nds</code> here.</p>
+        <p className="text-xs text-zinc-500">
+          Currently loaded: <code className="text-zinc-300">{src}</code>{' '}
+          <span className="text-zinc-600">· 🟢 visible · 🟡 boots, no display · 🔴 stalls early</span>
+        </p>
       </section>
 
       {error && (
