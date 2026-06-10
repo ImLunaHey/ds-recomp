@@ -38,15 +38,21 @@ const CNT_ENABLE            = 0x8000;
 //   0xC0 — SND (SNDi): bit 21 = NG (sound thread not yet initialized).
 //   0x80 — MIC / SYSTEM-extended: bit 5 = busy on the early init reply.
 //   0x40 — WM (wireless manager): bit 5 = busy on radio init replies.
-//   0x00 — SYSTEM: bit 5 = busy on the early system-init reply that
-//          Nintendogs hammers tens of thousands of times. The system
-//          tag is also used for the periodic ARM7→ARM9 heartbeat tick
-//          (e.g. Pokemon Platinum's 0x0000006B counter), where bit 5
-//          happens to be a real payload bit we MUST NOT strip — so we
-//          gate the 0x00-tag strip on the message having a non-empty
-//          upper-payload byte (bits 16..23). That distinguishes a
-//          tagged subsystem command from a small numeric tick.
 //
+// SYSTEM tag (0x00) is intentionally NOT in this table. A previous
+// version stripped bit 5 of the low byte for 0x00 replies that had a
+// nonzero command-class byte, on the theory that it was a stale busy
+// indicator like the SND tag's. That broke Nintendogs: ARM9 sends
+// 0x00040005 to ARM7, ARM7 replies 0x00040025 (bit 5 set in the low
+// byte) to signal completion — stripping bit 5 made the reply look
+// like an echo of the original command, so ARM9's PXI dispatcher
+// ignored it and the dependent "wait for flag clear" code spun forever
+// (the flag at 0x02155b64 is set by ARM9 just before the send and is
+// cleared by the FIFO RECV-NOT-EMPTY IRQ handler when the real
+// completion arrives). The Pokemon Platinum / Tetris DS / NSMB
+// captures that motivated the 0x00 entry never actually hit it — their
+// 0x00-tag traffic puts bit 5 in the upper-payload byte (e.g. Pokemon
+// Platinum's 0x00240005), not the low byte where the mask is applied.
 // The keys are the literal top byte, not a 6-bit "tag" — NitroSDK
 // formats are inconsistent across SDK versions, and the high-byte view
 // is what matches our captures.
@@ -54,25 +60,12 @@ const PXI_REPLY_BUSY_BITS: Record<number, number> = {
   0xC0: 0x00200000,
   0x80: 0x00000020,
   0x40: 0x00000020,
-  0x00: 0x00000020,
-};
-
-// Tags that require an extra structural guard before we strip — the
-// strip only fires if the value has any bits set in payload bits
-// 16..23 (the "command-class" byte for tagged PXI messages).
-const PXI_REPLY_TAG_GUARDED: Record<number, true> = {
-  0x00: true,
 };
 
 export function normalizePxiReply(value: number): number {
   const tag = (value >>> 24) & 0xFF;
   const mask = PXI_REPLY_BUSY_BITS[tag];
   if (mask === undefined) return value >>> 0;
-  if (PXI_REPLY_TAG_GUARDED[tag] && ((value & 0x00FF0000) >>> 0) === 0) {
-    // Looks like a bare numeric tick (heartbeat / sync counter), not
-    // a tagged command. Leave untouched.
-    return value >>> 0;
-  }
   return (value & ~mask) >>> 0;
 }
 
@@ -225,11 +218,12 @@ export class Ipc {
     // set forever and ARM9 retries the command every VBlank IRQ —
     // Tetris DS spends 160+ frames in this loop on SNDi (tag 0xC0).
     //
-    // The same pattern shows up across other tags: Nintendogs hammers
-    // the SYSTEM tag (0x00) with bit-5 set in every reply, Pokemon
-    // Platinum's WM (0x40) / MIC (0x80) replies similarly carry stale
-    // busy bits. We normalize ARM7→ARM9 words by tag-byte, stripping
-    // the documented "NG / busy" bit so ARM9 sees a clean completion.
+    // The same pattern shows up on the WM (tag 0x40) and MIC (tag 0x80)
+    // tags during Pokemon Platinum's wireless / microphone init. We
+    // normalize ARM7→ARM9 words by tag-byte, stripping the documented
+    // "NG / busy" bit so ARM9 sees a clean completion. The SYSTEM tag
+    // (0x00) is deliberately not normalized — see the comment on
+    // PXI_REPLY_BUSY_BITS.
     if (!isArm9) value = normalizePxiReply(value);
     const q = isArm9 ? this.q9to7 : this.q7to9;
     const remoteRecvNotEmptyEn = isArm9 ? this.recvNotEmptyIrqEn7 : this.recvNotEmptyIrqEn9;
