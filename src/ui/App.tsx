@@ -99,6 +99,7 @@ const BUILTIN_ROMS = [
   { label: 'Super Mario 64 DS', path: '/Super Mario 64 DS.nds',                            kind: 'retail', hint: '🟢' },
   { label: 'Brain Training',    path: '/Brain Training.nds',                               kind: 'retail', hint: '🟢' },
   { label: 'Cooking Mama',      path: '/Cooking Mama (USA).nds',                           kind: 'retail', hint: '🟢' },
+  { label: 'Age of Empires',    path: '/Age of Empires - Mythologies (USA) (En,Fr).nds',    kind: 'retail', hint: '🟢' },
   // Retail — boots past SDK init, no visible content yet
   { label: 'LEGO Star Wars',    path: '/LEGO Star Wars - The Complete Saga (USA).nds',     kind: 'retail', hint: '🟡' },
   { label: 'Pokemon Platinum',  path: '/Pokemon - Platinum Version (USA) (Rev 1).nds',     kind: 'retail', hint: '🟡' },
@@ -111,11 +112,17 @@ const BUILTIN_ROMS = [
   { label: 'Simpsons Game',     path: '/Simpsons Game, The (USA).nds',                     kind: 'retail', hint: '🟢' },
   { label: 'Sonic Rush Adv.',   path: '/Sonic Rush Adventure (USA) (En,Ja,Fr,De,Es,It).nds', kind: 'retail', hint: '🟡' },
   { label: 'Toy Story 3',       path: '/Toy Story 3 (USA) (En,Fr,Es) (NDSi Enhanced).nds', kind: 'retail', hint: '🟡' },
+  { label: 'GTA Chinatown',     path: '/Grand Theft Auto - Chinatown Wars (USA) (En,Fr,De,Es,It).nds', kind: 'retail', hint: '🟡' },
+  { label: 'LEGO Indy',         path: '/LEGO Indiana Jones - The Original Adventures (USA) (En,Fr,De,Es,It,Da).nds', kind: 'retail', hint: '🟡' },
+  { label: 'PMD: Blue Rescue',  path: '/Pokemon Mystery Dungeon - Blue Rescue Team (USA).nds', kind: 'retail', hint: '🟡' },
   // Retail — stalls or panics very early
   { label: 'Meteos',            path: '/Meteos.nds',                                       kind: 'retail', hint: '🔴' },
   { label: 'Plants vs Zombies', path: '/Plants vs. Zombies (USA).nds',                     kind: 'retail', hint: '🔴' },
   { label: 'Pokemon Pearl',     path: '/Pokemon - Pearl Version (USA) (Rev 5).nds',        kind: 'retail', hint: '🔴' },
   { label: 'Sims 3 (DSi)',      path: '/Sims 3, The (USA) (En,Fr,Es) (NDSi Enhanced).nds', kind: 'retail', hint: '🔴' },
+  { label: 'Pokemon Diamond',   path: '/1284 - Pokemon Diamond Version (v1.13) (E)(Independent).nds', kind: 'retail', hint: '🔴' },
+  { label: 'Apollo Justice',    path: '/Apollo Justice - Ace Attorney (USA).nds',          kind: 'retail', hint: '🔴' },
+  { label: 'SpongeBob Atlantis',path: "/SpongeBob's Atlantis SquarePantis (USA).nds",      kind: 'retail', hint: '🔴' },
   // Homebrew / PPU regression tests
   { label: 'RockWrestler',      path: '/rockwrestler.nds',                                 kind: 'test',   hint: '' },
   { label: 'obj mosaic',        path: '/test_obj_mosaic.nds',                              kind: 'test',   hint: '' },
