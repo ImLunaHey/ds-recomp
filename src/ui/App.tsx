@@ -10,6 +10,8 @@ import { SCREEN_W, SCREEN_H } from '../ppu/ppu';
 const BUILTIN_ROMS = [
   { label: 'Brain Training',    path: '/Brain Training.nds' },
   { label: 'Tetris DS',         path: '/Tetris DS.nds' },
+  { label: 'Super Mario 64 DS', path: '/Super Mario 64 DS.nds' },
+  { label: 'Meteos',            path: '/Meteos.nds' },
   { label: 'Pokemon Platinum',  path: '/Pokemon - Platinum Version (USA) (Rev 1).nds' },
   { label: 'New Super Mario',   path: '/New Super Mario Bros.nds' },
   { label: 'Nintendogs',        path: '/Nintendogs - Labrador.nds' },
