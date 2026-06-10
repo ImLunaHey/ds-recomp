@@ -221,22 +221,53 @@ export class Spi {
     }
   }
 
+  // Touch state. Set by the UI or test code: pixel coords on the bottom
+  // screen (0..255 X, 0..191 Y) when pressed, or null when not pressed.
+  // The TSC2046 ADC values are derived from these via the firmware's
+  // touchscreen calibration block (matching what initFirmware() stamps).
+  touchX: number | null = null;
+  touchY: number | null = null;
+
   private tickTouchscreen(byte: number): number {
-    // The TSC2046-like control byte arrives first; bits 4..6 select
-    // the channel. The response is a one-bit dummy zero, then 12 bits
-    // of data MSB-first, then trailing zeros, split across the next
-    // two byte exchanges.
-    // Per GBATEK channel 1 = Y (released value = 0xFFF), channel 5 = X
-    // (released value = 0x000). Returning these tells the SDK driver
-    // "pen not down".
     if (this.bytePos === 0) {
       this.tscChannel = (byte >> 4) & 0x7;
       return 0x00;
     }
-    const value12 = this.tscChannel === 1 ? 0xFFF : 0x000;
+    const value12 = this.adcValueForChannel(this.tscChannel);
     if (this.bytePos === 1) return (value12 >> 5) & 0x7F;
     if (this.bytePos === 2) return (value12 & 0x1F) << 3;
     return 0x00;
+  }
+
+  // Per GBATEK §"DS Touch Screen":
+  //   channel 1 = Y ADC (released = 0xFFF)
+  //   channel 5 = X ADC (released = 0x000)
+  // When pressed, the values map linearly through the firmware's
+  // calibration. We stamp:
+  //   px(32, 32)  → adc(0x200, 0x200)
+  //   px(224,160) → adc(0xE00, 0xE00)
+  // in initFirmware(), so use the same mapping here.
+  private adcValueForChannel(ch: number): number {
+    const pressed = this.touchX !== null && this.touchY !== null;
+    if (!pressed) {
+      if (ch === 1) return 0xFFF;
+      return 0x000;
+    }
+    if (ch === 1) {
+      // Y channel
+      const adcLow = 0x200, adcHigh = 0xE00;
+      const pxLow = 32, pxHigh = 160;
+      const t = (this.touchY! - pxLow) / (pxHigh - pxLow);
+      return Math.max(0, Math.min(0xFFF, Math.round(adcLow + t * (adcHigh - adcLow))));
+    }
+    if (ch === 5) {
+      // X channel
+      const adcLow = 0x200, adcHigh = 0xE00;
+      const pxLow = 32, pxHigh = 224;
+      const t = (this.touchX! - pxLow) / (pxHigh - pxLow);
+      return Math.max(0, Math.min(0xFFF, Math.round(adcLow + t * (adcHigh - adcLow))));
+    }
+    return 0x000;
   }
 
   private tickPowerManagement(byte: number): number {

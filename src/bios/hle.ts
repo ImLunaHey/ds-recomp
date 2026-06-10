@@ -13,6 +13,25 @@
 import type { Cpu } from '../cpu/cpu';
 import type { Irq } from '../io/irq';
 
+// ARM7 BIOS sound tables (SWI 0x20/0x21/0x22). Real BIOS stores fixed
+// constants; we generate plausible values clean-room. Most games use
+// the result for audio frequency calc and don't strictly verify it.
+const sineTable = ((): Int16Array => {
+  const t = new Int16Array(64);
+  for (let i = 0; i < 64; i++) t[i] = Math.round(Math.sin((i / 64) * Math.PI / 2) * 0x7FFF);
+  return t;
+})();
+const pitchTable = ((): Uint16Array => {
+  const t = new Uint16Array(768);
+  for (let i = 0; i < 768; i++) t[i] = Math.round(Math.pow(2, i / 768) * 0x1000) & 0xFFFF;
+  return t;
+})();
+const volumeTable = ((): Uint8Array => {
+  const t = new Uint8Array(128);
+  for (let i = 0; i < 128; i++) t[i] = Math.round(Math.pow(i / 127, 2) * 0x7F);
+  return t;
+})();
+
 export class BiosHle {
   cpu: Cpu;
   irq: Irq;
@@ -50,11 +69,15 @@ export class BiosHle {
         case 0x05: return this.vblankWait();
         case 0x06: return this.halt();
         case 0x07: return this.halt();   // Sleep — treat as halt
+        case 0x08: { s.r[0] = 0; return true; }  // SoundBias (stub: ok)
         case 0x09: { divide(s.r[0] | 0, s.r[1] | 0, s); return true; }
+        case 0x0A: { s.r[0] = (s.r[0] | 0) % (s.r[1] | 0 || 1) >>> 0; return true; }
         case 0x0B: cpuSet(this.cpu, s.r[0], s.r[1], s.r[2]); return true;
         case 0x0C: cpuFastSet(this.cpu, s.r[0], s.r[1], s.r[2]); return true;
         case 0x0D: { s.r[0] = Math.floor(Math.sqrt(s.r[0] >>> 0)); return true; }
         case 0x0E: return this.getCRC16(s);
+        case 0x0F: { s.r[0] = (s.r[0] >>> 0) ? 1 : 0; return true; }  // IsDebugger
+        case 0x1F: return true;          // CustomHalt (stub)
       }
     } else {
       switch (swi) {
@@ -63,10 +86,16 @@ export class BiosHle {
         case 0x05: return this.vblankWait();
         case 0x06: return this.halt();
         case 0x07: return this.halt();   // Sleep — treat as halt
+        case 0x08: { s.r[0] = 0; return true; }  // SoundBias
         case 0x09: { divide(s.r[0] | 0, s.r[1] | 0, s); return true; }
+        case 0x0A: { s.r[0] = (s.r[0] | 0) % (s.r[1] | 0 || 1) >>> 0; return true; }
         case 0x0B: cpuSet(this.cpu, s.r[0], s.r[1], s.r[2]); return true;
         case 0x0C: cpuFastSet(this.cpu, s.r[0], s.r[1], s.r[2]); return true;
         case 0x0E: return this.getCRC16(s);
+        case 0x1F: return true;          // CustomHalt (stub)
+        case 0x20: { s.r[0] = sineTable[(s.r[0] >>> 0) & 0x3F] >>> 0; return true; }
+        case 0x21: { s.r[0] = pitchTable[(s.r[0] >>> 0) & 0x2FF] >>> 0; return true; }
+        case 0x22: { s.r[0] = volumeTable[(s.r[0] >>> 0) & 0x7F] >>> 0; return true; }
       }
     }
     // Unhandled — pretend it succeeded (return to user). Better than

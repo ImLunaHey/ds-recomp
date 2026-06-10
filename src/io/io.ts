@@ -208,7 +208,14 @@ export class IoBus {
       case 0x04000007: return (this.ppu.vcount >>> 8) & 0x01;
       case 0x04000130: return this.keyinput & 0xFF;
       case 0x04000131: return (this.keyinput >>> 8) & 0xFF;
-      case 0x04000136: return this.extKeyinput & 0xFF;
+      case 0x04000136: {
+        // Pen-down on ARM7: bit 6 LOW = pressed. The actual touch state
+        // lives on the SPI module (which the touchscreen ADC reads
+        // from). When touchX/touchY are set, clear bit 6.
+        let v = this.extKeyinput & 0xFF;
+        if (this.spi && this.spi.touchX !== null && this.spi.touchY !== null) v &= ~0x40;
+        return v;
+      }
       case 0x04000137: return (this.extKeyinput >>> 8) & 0xFF;
       // IPCSYNC — fall back to the half-word reader.
       case 0x04000180: return this.ipc.readSync(this.isArm9) & 0xFF;
