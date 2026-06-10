@@ -205,7 +205,12 @@ export class Cart {
     switch (this.savCmd) {
       case 0x05: {                                       // RDSR
         // Bits 0,1 = WIP, WEL. We're never busy; report WEL state.
-        return (this.savWriteEnabled ? 0x02 : 0x00) | 0xF0;
+        // High bits 4-7 = block-protect + status-reg-write-disable.
+        // We must return 0 there: ORing 0xF0 made the chip look fully
+        // write-protected, which Simpsons Game interpreted as "save
+        // chip inaccessible" and displayed "data could not be
+        // accessed" on the title screen instead of booting normally.
+        return this.savWriteEnabled ? 0x02 : 0x00;
       }
       case 0x06: this.savWriteEnabled = true;  return 0xFF;   // WREN
       case 0x04: this.savWriteEnabled = false; return 0xFF;   // WRDI
