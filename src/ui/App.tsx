@@ -1,10 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { BrowserRouter, Link, Routes, Route, Navigate, useParams } from 'react-router-dom';
 import { Emulator } from '../emulator';
+import { EmuContext } from './EmuContext';
+import { LibraryPage } from './LibraryPage';
+import { RomDetailPage } from './RomDetailPage';
 import { unitCodeName } from '../cart/header';
 import { decodeBannerIcon, decodeBannerTitle } from '../cart/banner';
 import { disasmArm } from '../cpu/disasm';
 import { SCREEN_W, SCREEN_H } from '../ppu/ppu';
 import { startAudio, stopAudio } from '../audio/audio_bridge';
+import { useEmu } from './EmuContext';
+import { pathFromSlug, getRomMeta } from './romMeta';
 
 // Virtual control-pad button. ext=true → extKeyinput bit, otherwise
 // keyinput bit. Uses Pointer events so mouse + touch both work and the
@@ -309,13 +315,17 @@ function injectGxDemo(emu: Emulator): void {
   emu.mem.pram[0] = 0; emu.mem.pram[1] = 0;
 }
 
-export function App() {
-  const emuRef = useRef<Emulator | null>(null);
-  if (!emuRef.current) emuRef.current = new Emulator();
-  const emu = emuRef.current;
+export function PlayerPage() {
+  const emu = useEmu();
+  // URL param drives which ROM we load. If the slug isn't registered
+  // we fall back to whichever ROM was last selected in localStorage,
+  // so the page still works for ad-hoc paths.
+  const { slug } = useParams<{ slug: string }>();
+  const slugPath = slug ? pathFromSlug(slug) : null;
+  const romMeta = slugPath ? getRomMeta(slugPath) : null;
 
   const [romBytes, setRomBytes] = useState<Uint8Array | null>(null);
-  const [src, setSrc] = useState<string>(pickInitialRom());
+  const [src, setSrc] = useState<string>(slugPath ?? pickInitialRom());
   const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [tick, setTick] = useState(0);
@@ -426,7 +436,10 @@ export function App() {
   // Initial fetch of the most-recently-used built-in ROM (or default).
   useEffect(() => {
     let cancelled = false;
-    const path = pickInitialRom();
+    // URL slug takes priority — that's how the LibraryPage hands a ROM
+    // to the player. Falls back to the localStorage-remembered ROM if
+    // the user landed on /play/<unknown-slug> or the bare player page.
+    const path = slugPath ?? pickInitialRom();
     (async () => {
       try {
         const res = await fetch(path);
@@ -441,7 +454,7 @@ export function App() {
       }
     })();
     return () => { cancelled = true; };
-  }, [loadFromBytes]);
+  }, [loadFromBytes, slugPath]);
 
   // Paint icon when the loaded ROM changes.
   useEffect(() => {
@@ -602,9 +615,12 @@ export function App() {
     <div className="min-h-screen p-8 max-w-5xl mx-auto">
       <header className="mb-6 flex items-baseline justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">ds-recomp</h1>
+          <Link to="/" className="text-xs text-zinc-400 hover:text-zinc-200">← Library</Link>
+          <h1 className="text-3xl font-bold tracking-tight mt-1">
+            {romMeta ? romMeta.label : 'ds-recomp'}
+          </h1>
           <p className="text-sm text-zinc-400 mt-1">
-            ARM9 + ARM7 interpreters, two-bus memory, IO routing, PPU scanline scheduler.
+            {romMeta?.blurb ?? 'ARM9 + ARM7 interpreters, two-bus memory, IO routing, PPU scanline scheduler.'}
           </p>
         </div>
         <div className="flex gap-2">
@@ -889,7 +905,60 @@ export function App() {
           )}
         </div>
       </section>
+
+      {/* Debug log — live snapshot of CPU + IRQ state for whatever is
+          running. Polls the emu via the same `tick` setState that the
+          stats panel uses, so it updates roughly twice a second. */}
+      <DebugLog emu={emu} />
     </div>
+  );
+}
+
+// Compact panel showing the current ARM9/ARM7 PC, CPSR, IRQ enable/
+// pending bitmasks, and the last few interesting bus events. Renders
+// `pre`-formatted text so it's easy to copy/paste into a bug report.
+function DebugLog({ emu }: { emu: Emulator }) {
+  const [, setT] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setT((v) => v + 1), 500);
+    return () => clearInterval(id);
+  }, []);
+  const hex = (n: number, w = 8) => n.toString(16).padStart(w, '0');
+  const pc9 = emu.cpu9.state.r[15] >>> 0;
+  const pc7 = emu.cpu7.state.r[15] >>> 0;
+  const cpsr9 = emu.cpu9.state.cpsr >>> 0;
+  const cpsr7 = emu.cpu7.state.cpsr >>> 0;
+  const mode = (cpsr: number) => {
+    const m = cpsr & 0x1F;
+    return ({0x10: 'usr', 0x11: 'fiq', 0x12: 'irq', 0x13: 'svc', 0x17: 'abt', 0x1B: 'und', 0x1F: 'sys'} as Record<number,string>)[m] ?? `0x${m.toString(16)}`;
+  };
+  const flags = (cpsr: number) => `${(cpsr>>31)&1?'N':'-'}${(cpsr>>30)&1?'Z':'-'}${(cpsr>>29)&1?'C':'-'}${(cpsr>>28)&1?'V':'-'} ${(cpsr>>7)&1?'I':'-'}${(cpsr>>6)&1?'F':'-'}${(cpsr>>5)&1?'T':'-'}`;
+  return (
+    <section className="mt-6 border border-zinc-800 rounded-lg bg-zinc-900/60 p-3 font-mono text-[11px] text-zinc-300">
+      <div className="text-xs font-semibold text-zinc-200 mb-2">Debug log</div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1">
+        <div>
+          <div className="text-zinc-500">ARM9</div>
+          <div>PC=0x{hex(pc9)} CPSR=0x{hex(cpsr9)} ({mode(cpsr9)}, {flags(cpsr9)}) halt={emu.cpu9.state.halted ? '1' : '0'}</div>
+          <div>IE=0x{hex(emu.irq9.ie)} IF=0x{hex(emu.irq9.if_)} IME={emu.irq9.ime ? '1' : '0'}</div>
+        </div>
+        <div>
+          <div className="text-zinc-500">ARM7</div>
+          <div>PC=0x{hex(pc7)} CPSR=0x{hex(cpsr7)} ({mode(cpsr7)}, {flags(cpsr7)}) halt={emu.cpu7.state.halted ? '1' : '0'}</div>
+          <div>IE=0x{hex(emu.irq7.ie)} IF=0x{hex(emu.irq7.if_)} IME={emu.irq7.ime ? '1' : '0'}</div>
+        </div>
+        <div>
+          <div className="text-zinc-500">PPU / Display</div>
+          <div>DISPCNT_A=0x{hex(emu.ppu.dispcntA)} VCount={emu.ppu.vcount} Frame={emu.ppu.frameCount}</div>
+          <div>DISPCNT_B=0x{hex(emu.ppu.dispcntB)} POWCNT1=0x{hex(emu.io9.powcnt1, 4)}</div>
+        </div>
+        <div>
+          <div className="text-zinc-500">IPC</div>
+          <div>q9to7={emu.ipc.q9to7.size} q7to9={emu.ipc.q7to9.size}</div>
+          <div>sync9Out=0x{hex(emu.ipc.sync9Out, 1)} sync7Out=0x{hex(emu.ipc.sync7Out, 1)}</div>
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -938,4 +1007,27 @@ function hex32(n: number): string {
 }
 function hex16(n: number): string {
   return '0x' + (n >>> 0).toString(16).padStart(4, '0');
+}
+
+
+// Top-level router. Library at /, per-ROM detail at /rom/:slug, the
+// actual emulator UI at /play/:slug. The Emulator instance lives at
+// the App root via useRef so it survives navigation — switching ROMs
+// is cheaper than rebuilding the whole emulator graph.
+export function App() {
+  const emuRef = useRef<Emulator | null>(null);
+  if (!emuRef.current) emuRef.current = new Emulator();
+  return (
+    <EmuContext.Provider value={{ emu: emuRef.current }}>
+      <BrowserRouter>
+        <Routes>
+          <Route path="/" element={<LibraryPage />} />
+          <Route path="/rom/:slug" element={<RomDetailPage />} />
+          <Route path="/play/:slug" element={<PlayerPage />} />
+          <Route path="/play" element={<PlayerPage />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </BrowserRouter>
+    </EmuContext.Provider>
+  );
 }

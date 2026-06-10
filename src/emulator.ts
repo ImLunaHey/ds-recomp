@@ -181,7 +181,7 @@ export class Emulator {
     // / Tetris / Nintendogs regressed to no-render after the reset
     // wiped CP15's earlier patch.
     installBiosStubs(this.mem);
-    this.cpu9.cp15.updateIrqHandlerPtrLiteral();
+    this.cpu9.cp15?.updateIrqHandlerPtrLiteral();
     this.totalDots = 0;
   }
 
