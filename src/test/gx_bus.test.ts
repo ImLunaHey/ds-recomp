@@ -22,9 +22,9 @@ describe('GX via IO bus', () => {
     cmd(0x10, 1); cmd(0x15);
     cmd(0x40, 0);
     cmd(0x20, 0x7C00);     // BGR555 blue
-    cmd(0x23, packXY(-0.5, -0.5), Math.round(0 * 4096) & 0xFFFF);
-    cmd(0x23, packXY( 0.5, -0.5), Math.round(0 * 4096) & 0xFFFF);
-    cmd(0x23, packXY( 0.0,  0.5), Math.round(0 * 4096) & 0xFFFF);
+    cmd(0x23, packXY(-0.5, -0.5), 0);
+    cmd(0x23, packXY( 0.5, -0.5), 0);
+    cmd(0x23, packXY( 0.0,  0.5), 0);
     cmd(0x41);
     cmd(0x50, 0);
     const fb = emu.ppu.gx.fbFront;

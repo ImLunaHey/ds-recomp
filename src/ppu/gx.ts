@@ -258,7 +258,7 @@ export class Gx {
     const out = mat4Identity();
     for (let c = 0; c < 3; c++)
       for (let r = 0; r < 4; r++) out[c * 4 + r] = m[r * 4 + c];
-    out[12] = m[0 * 4 + 3]; out[13] = m[1 * 4 + 3]; out[14] = m[2 * 4 + 3];
+    out[12] = m[3]; out[13] = m[7]; out[14] = m[11];
     return out;
   }
   private unpack3x3(p: number[]): Float64Array {
