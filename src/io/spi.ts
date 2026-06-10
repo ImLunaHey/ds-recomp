@@ -33,6 +33,14 @@ export class Spi {
   private bytePos = 0;
   private fwCmd = 0;
   private fwAddr = 0;
+  // Write-Enable Latch — set by WREN (0x06), cleared by WRDI (0x04) or by
+  // a successful page-program / erase. Returned in bit 1 of RDSR (0x05).
+  // Pokemon Platinum's boot state machine sends WREN then RDSR and gates
+  // its next state-machine step on bit 1 being set; returning 0x00
+  // unconditionally was a permanent stall (per agent analysis turning a
+  // 0/1/0 VBlank-flag dance into a deeper r7 jump-table that never
+  // advances past state 4 because the RDSR response stayed 0).
+  private fwWel = false;
   private tscChannel = 0;
   // Real DS SPI hardware: when SPICNT bit 11 (CS-hold) transitions
   // 1 → 0 mid-transaction, the chip select stays asserted until *after*
@@ -197,6 +205,12 @@ export class Spi {
     if (this.bytePos === 0) {
       this.fwCmd = byte;
       this.fwAddr = 0;
+      // Single-byte commands take effect at command latch.
+      if (byte === 0x06) this.fwWel = true;          // WREN
+      else if (byte === 0x04) this.fwWel = false;    // WRDI
+      // Page-program (0x02) and sector-erase (0x20/0xD8) would also
+      // auto-clear WEL once executed; we don't persist writes here so
+      // they stay no-ops, but the WEL clear could be wired later.
       return 0xFF;
     }
     switch (this.fwCmd) {
@@ -210,7 +224,7 @@ export class Spi {
         return r;
       }
       case 0x05:     // RDSR — status register: bit 0 = WIP (busy), bit 1 = WEL.
-        return 0x00;
+        return this.fwWel ? 0x02 : 0x00;
       case 0x9F:     // RDID — manufacturer / device ID. Pretend we're a real chip.
         if (this.bytePos === 1) return 0x20;       // mfr
         if (this.bytePos === 2) return 0x40;       // dev hi
