@@ -98,6 +98,77 @@ export class Ppu {
     }
   }
 
+  // New Super Mario Bros: the SDK's NitroFS file-system manager keeps an
+  // FS-handle struct in main RAM at 0x02096114 with a vtable callback
+  // pointer at +0x50 (= 0x02096164). On a real DS, ARM7 firmware's cart
+  // boot path eventually triggers FS_Init which registers a default
+  // async-read callback there. Without our cart layer being touched
+  // (zero writes to 0x040001A0-AF during NSMB boot), that pointer
+  // stays 0 — the dispatcher at 0x02069728 does `BLX [R5+0x50]`,
+  // jumps to address 0 (BIOS), returns garbage that isn't 0/1/6, and
+  // spins forever at PC 0x0206971c+ polling the state-code u32 at
+  // 0x02096130. Patch a tiny "MOV R0,#0 ; BX LR" thunk into main RAM
+  // at 0x027FF800 (shared OS area, BIOS-zerofilled) and install it
+  // as the callback whenever the struct's "rom" tag is set. This
+  // lets the dispatcher take its BEQ-on-zero path and exit the wait
+  // loop, falling through into NSMB's actual graphics init.
+  //
+  // Detection: the struct is reliably tagged "rom\0" at +0x00 once
+  // NSMB's crt0 has stamped it (around frame 64). We watch for that
+  // exact pattern every VBlank and install the thunk lazily.
+  private nsmbThunkInstalled = false;
+  private applyNsmbFsThunk(ram: Uint8Array): void {
+    if (this.nsmbThunkInstalled) return;
+    const tagOff = 0x96114;           // 0x02096114 & 0x3FFFFF
+    if (ram[tagOff] !== 0x72 || ram[tagOff + 1] !== 0x6F ||
+        ram[tagOff + 2] !== 0x6D || ram[tagOff + 3] !== 0x00) return;
+    // Install thunk at 0x027FF800. We return 6 ("I/O ready/complete")
+    // rather than 0 ("idle") — the agent's first guess of 0 took the
+    // BEQ branch but the outer wait loop kept polling because no
+    // forward progress happened. Return-6 takes a different branch
+    // at 0x02069748 (BEQ 0x02069760 → calls a completion handler at
+    // 0x02069760 instead of just clearing bit 0x200).
+    const thunkOff = 0x7FF800 & 0x3FFFFF;
+    // MOV R0, #6  → e3a00006
+    ram[thunkOff]     = 0x06; ram[thunkOff + 1] = 0x00;
+    ram[thunkOff + 2] = 0xA0; ram[thunkOff + 3] = 0xE3;
+    // BX LR       → e12fff1e
+    ram[thunkOff + 4] = 0x1E; ram[thunkOff + 5] = 0xFF;
+    ram[thunkOff + 6] = 0x2F; ram[thunkOff + 7] = 0xE1;
+    // Install pointer at 0x02096164 (R5 + 0x50).
+    const cbOff = 0x96164;
+    ram[cbOff]     = 0x00; ram[cbOff + 1] = 0xF8;
+    ram[cbOff + 2] = 0x7F; ram[cbOff + 3] = 0x02;
+    this.nsmbThunkInstalled = true;
+  }
+
+  // Pokemon Platinum: ARM9's THUMB validation routine at 0x02024370
+  // bzero's 0x027FF000-0x027FF01C, then writes "ADAJ" ("ADAJ" = ASCII
+  // 0x4A414441 = Pokemon's IPL ROM signature) to 0x027FF00C, then a
+  // sub call, then expects 0x3130 ("01" = IPL version) at 0x027FF010.
+  // The check at 0x020243ba is `LDRH R1, [0x027FF010] ; CMP R1, #0x3130`
+  // and on FAIL it falls through to `BLX 0x020c42a8 (OS_Halt)` —
+  // exactly the OS scheduler idle loop that's been blocking the boot.
+  // Real DS firmware writes 0x3130 at 0x027FF010 as part of the
+  // IPL-version stamp (GBATEK §"BIOS RAM Usage" calls 0x027FF000-AFF
+  // "firmware-supplied data"). We don't run firmware so we stamp it
+  // here, replayed every VBlank so the bzero that runs first can't
+  // permanently wipe it.
+  private applyPokemonIplStamp(ram: Uint8Array): void {
+    const off = 0x7FF010 & 0x3FFFFF;
+    // u16 = 0x3130 ("01"). Re-assert every VBlank so the bzero loop
+    // can't keep it clear.
+    ram[off]     = 0x30;
+    ram[off + 1] = 0x31;
+    // Also stamp the surrounding context the SDK init expects:
+    // 0x027FF00C: "ADAJ" (signature)
+    const sigOff = 0x7FF00C & 0x3FFFFF;
+    ram[sigOff]     = 0x41;     // 'A'
+    ram[sigOff + 1] = 0x44;     // 'D'
+    ram[sigOff + 2] = 0x41;     // 'A'
+    ram[sigOff + 3] = 0x4A;     // 'J'
+  }
+
   private endLine(): void {
     this.vcount = (this.vcount + 1) % LINES_PER_FRAME;
     if (this.vcount === VISIBLE_LINES) {
@@ -122,6 +193,16 @@ export class Ppu {
       ram[off + 1] = (v >> 8) & 0xFF;
       ram[off + 2] = (v >> 16) & 0xFF;
       ram[off + 3] = (v >> 24) & 0xFF;
+      this.applyNsmbFsThunk(ram);
+      // applyPokemonIplStamp(): tried and reverted — passing the
+      // 0x3130 validation at 0x020243ba lets Pokemon's ARM9 fall
+      // through into post-validation init code that we don't yet
+      // model, and PC NOP-sleds into unmapped memory by frame 6.
+      // The validation gate is real per the agent's analysis but the
+      // unblock is only useful once more SDK-init values in
+      // 0x027FF000-0x027FFAFF are also populated. Leaving the patch
+      // documented but inactive until we know the full set.
+      void this.applyPokemonIplStamp;
     } else if (this.vcount === 0) {
       this.dispstat &= ~0x01;         // VBlank ends
     }
