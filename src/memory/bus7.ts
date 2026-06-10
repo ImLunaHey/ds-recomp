@@ -103,7 +103,11 @@ export class Bus7 {
     // Nintendogs, …) deadlock polling for them. Force-OR the missing
     // bit into every write so the boot-info word matches what BIOS
     // would have produced.
-    if (addr === 0x027FFF8C) v |= 0x100;
+    // Bit 8 = touchscreen/RTC ready (NSMB, Nintendogs).
+    // Bit 5 = sound subsystem ready (Tetris DS waits on this; confirmed
+    // via AND-with-#0x20 polling loop at 0x0200A1E0).
+    // Bit 0 = "BIOS boot completed" indicator various SDK code checks.
+    if (addr === 0x027FFF8C) v |= 0x121;
     const r = this.resolve(addr);
     if (!r) return;
     r.arr[r.idx]     = v & 0xFF;

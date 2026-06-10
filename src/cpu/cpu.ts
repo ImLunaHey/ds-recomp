@@ -81,15 +81,14 @@ export class Cpu {
     // NOP-sled through unmapped memory (which our bus returns as 0,
     // decoding as conditional NOP) — runaway PC, no game progress.
     // Instead, detect PC in clearly-invalid regions and force a BX LR
-    // return so the calling function can recover. Valid regions:
-    //   0x00000000-0x00007FFF (BIOS)
-    //   0x01FF8000-0x01FFEFFF (SDK runtime autoloaded in IWRAM/DTCM)
-    //   0x02000000-0x023FFFFF (main RAM)
-    //   0x03000000-0x03FFFFFF (WRAM + IWRAM mirror)
-    //   0xFFFF0000-0xFFFFFFFF (BIOS high vectors)
+    // return so the calling function can recover.
+    //
+    // ARM7 has BIOS at 0x00000000-0x00003FFF (valid execution region).
+    // ARM9 BIOS is at the high vectors only — ARM9 with PC = 0 means a
+    // BLX to a NULL function pointer; treat as invalid.
+    const lowBound = this.isArm9 ? 0x01000000 : 0;
     const inValid =
-      (decode < 0x00010000) ||
-      (decode >= 0x01000000 && decode < 0x02400000) ||
+      (decode >= lowBound && decode < 0x02400000) ||
       (decode >= 0x03000000 && decode < 0x04000000) ||
       (decode >= 0xFFFF0000);
     if (!inValid) {
