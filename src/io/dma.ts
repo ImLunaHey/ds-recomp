@@ -8,7 +8,7 @@
 // next.
 
 import type { ArmBus } from '../cpu/bus';
-import { Irq, IRQ_TIMER0 } from './irq';
+import { Irq, IRQ_DMA0 } from './irq';
 
 const TIMING_IMMEDIATE = 0;
 const TIMING_VBLANK    = 1;
@@ -138,13 +138,13 @@ export class Dma {
       c.srcLatched = c.src;
       c.dstLatched = c.dst;
       c.countLatched = value & 0xFFFF;     // word count in low 16 bits
-      if (c.timing === TIMING_IMMEDIATE) this.runChannel(c);
+      if (c.timing === TIMING_IMMEDIATE) this.runChannel(c, this.channels.indexOf(c));
     }
   }
 
   // Run one full transfer for a channel. Doesn't model the cycle cost
   // — it's atomic from the CPU's perspective.
-  private runChannel(c: DmaChannel): void {
+  private runChannel(c: DmaChannel, idx: number): void {
     const wordCount = c.countLatched === 0 ? (this.isArm9 ? 0x200000 : 0x10000) : c.countLatched;
     const step = c.word32 ? 4 : 2;
     let src = c.src >>> 0;
@@ -184,9 +184,11 @@ export class Dma {
       c.enabled = false;
       c.countCtrl = (c.countCtrl & 0x7FFFFFFF) >>> 0;     // clear enable
     }
-    if (c.irqOnDone) this.irq.raise(IRQ_TIMER0 << (c.timing === TIMING_VBLANK ? 0 : 0));
-    // Real per-channel IRQs use IRQ_DMA0..3 (bits 8..11). We don't emit
-    // those yet — Pokemon Platinum doesn't rely on DMA IRQs at boot.
+    // Per-channel completion IRQ — IRQ_DMA0..3 are bits 8..11. Pokemon
+    // Platinum's save-loaded boot path waits on a flag set by the DMA2
+    // completion handler, so without firing these the title-screen
+    // setup never runs.
+    if (c.irqOnDone) this.irq.raise(IRQ_DMA0 << idx);
   }
 
   // Called by PPU when entering VBlank / HBlank — fires every channel
@@ -196,8 +198,9 @@ export class Dma {
   triggerCardReady(): void { if (this.isArm9) this.fireTiming(TIMING_CARDREADY); }
 
   private fireTiming(t: number): void {
-    for (const c of this.channels) {
-      if (c.enabled && c.timing === t) this.runChannel(c);
+    for (let i = 0; i < this.channels.length; i++) {
+      const c = this.channels[i];
+      if (c.enabled && c.timing === t) this.runChannel(c, i);
     }
   }
 }
