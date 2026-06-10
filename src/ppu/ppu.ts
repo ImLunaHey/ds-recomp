@@ -137,12 +137,16 @@ export class Ppu {
     // short; 300 (5 s) is safely past any normal game's pause.
     if (this.ipc.framesSinceLastSend < 300) return;
     if (this.ipc.q7to9.size > 0) return;
-    // Empirical: synthetic FIFO injections crashed Pokemon Platinum
-    // (ARM9 PC ended up at 0x30 = BIOS undefined-vector area) without
-    // producing visible benefit for NSMB. Leaving the framework wired
-    // but disabled — the right value to inject is game-specific and
-    // requires per-ROM protocol RE.
-    // this.ipc.writeSend(false, 0x0000006B, true);
+    // Empirical: even gated to NSMB (via FS-thunk-installed marker),
+    // injecting 0x4D causes NSMB's ARM7 to enter BIOS region (likely
+    // an undefined-instruction trap or unhandled mode switch) within
+    // ~60 frames of the first inject. The agent's RE indicated this
+    // value SHOULD be safe per protocol, so the breakage points to a
+    // subtler missing piece in our IPC IRQ / dispatcher state. Until
+    // we model that, leave the framework wired but skip the actual
+    // write — at least the heartbeat plumbing is ready for the
+    // moment we identify the safe inject value/timing.
+    void 0;   // this.ipc.writeSend(false, 0x0000004D, true);
     this.ipc.framesSinceLastSend = -600;
   }
 
