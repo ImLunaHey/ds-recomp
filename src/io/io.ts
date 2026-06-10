@@ -55,6 +55,21 @@ export class IoBus {
     this.math = math;
     this.spi = spi;
     this.isArm9 = isArm9;
+    // ARM9-side IO owns cart-DMA-ready trigger + cart-end IRQ. Only
+    // ARM9 has the cart-ready DMA timing (= 5), and EXMEMCNT defaults
+    // route cart to ARM9. Don't double-register from ARM7's IO; the
+    // ARM7 instance constructs second and its registration would
+    // overwrite the ARM9 one.
+    if (isArm9) {
+      cart.onTransferReady = () => dma.triggerCardReady();
+      cart.onTransferEnd = () => {
+        // IRQ bit 19 = cart transfer end. Per GBATEK §"Interrupt
+        // Control", raised when ROMDATA's last word has been read AND
+        // AUXSPICNT bit 14 (transfer-end-IRQ-enable) is set; cart.ts
+        // already gates on that bit.
+        irq.raise(1 << 19);
+      };
+    }
   }
 
   private isDmaAddr(addr: number): boolean {
