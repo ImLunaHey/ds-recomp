@@ -55,6 +55,13 @@ const SAV_ADDR_SIZE_BY_GAME_CODE: Record<string, number> = {
   // verification-read returned the wrong content. Game then showed
   // "Save data could not be accessed" on its title screen.
   YSZE: 1,
+  // Age of Empires: Mythologies (USA) — 2-byte EEPROM. Same shape of
+  // bug as Simpsons: the third byte of the address slot was eaten as
+  // an extra address byte, dropping the leading byte of every save
+  // record. Game shows "Could not access save data" on title screen.
+  // 2-byte addressing: fbA renders 38 distinct colors of real game UI
+  // (was 15 = error-screen text).
+  CEPE: 2,
 };
 
 export class Cart {
