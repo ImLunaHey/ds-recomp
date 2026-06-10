@@ -62,6 +62,47 @@ export class Cart {
   // wiring to raise IRQ_CART (bit 19) when the buffer drains.
   onTransferEnd: (() => void) | null = null;
 
+  // ---- Save backup chip (AUXSPI device) ----
+  //
+  // The DS has a separate SPI bus for the cart's save chip. SDK code
+  // selects backup via AUXSPICNT bit 13, then performs byte exchanges
+  // via AUXSPIDATA. The chip auto-detects type by addr-byte count:
+  //   - EEPROM 512 B: 1 addr byte
+  //   - EEPROM 8-64 KB: 2 addr bytes
+  //   - FLASH/EEPROM 256 KB - 8 MB: 3 addr bytes
+  // We start with a 1 MB FLASH-like backing, expanded on demand if a
+  // game writes past the end. Status register reports "ready, not
+  // protected" — matches what most SDK chip-detect probes expect.
+  //
+  // Commands handled (SPI standard):
+  //   0x03 READ  — read data, addrSize-byte addr then data stream
+  //   0x0B READ_HI — high-byte read (FLASH variant); same as 0x03 + +0x100
+  //   0x02 WRITE — page program; same addr format then data writes
+  //   0x0A WRITE_HI — high-byte write; same as 0x02 + +0x100
+  //   0x05 RDSR  — read status register
+  //   0x01 WRSR  — write status register (sets write-protect bits)
+  //   0x06 WREN  — write enable
+  //   0x04 WRDI  — write disable
+  // Anything else returns 0xFF and ends quietly.
+  // Empty flash chips read as 0xFF (= no bits programmed). Initialize
+  // the backing blob accordingly so tests for "no save data" see the
+  // right value.
+  sav: Uint8Array = (() => { const a = new Uint8Array(0x100000); a.fill(0xFF); return a; })();
+  savDirty = false;
+  private savCmd = 0;
+  private savAddr = 0;
+  private savAddrBytes = 0;             // address bytes received in current tx
+  private savBytePos = 0;               // overall byte index in current tx
+  private savWriteEnabled = false;
+  private savAddrSize = 3;              // auto-detect: assume 3 until proven less
+  // Whether the SDK driver is asserting CS hold (AUXSPICNT bit 6 was 1
+  // on the last write; released on transition 1 → 0).
+  private auxHold = false;
+  // True after AUXSPICNT bit 13 = 1; SPI writes route to the save chip.
+  private auxToBackup = false;
+  // Last byte sent out by the save chip — read back by AUXSPIDATA.
+  private auxOut = 0xFF;
+
   loadRom(rom: Uint8Array): void {
     this.rom = rom;
     this.cmd.fill(0);
@@ -70,15 +111,129 @@ export class Cart {
     this.romctrl = 0;
     this.phase = PHASE_RAW;
     this.key1CmdCount = 0;
+    // Reset save state (but keep .sav blob — caller controls reload)
+    this.savCmd = 0;
+    this.savAddr = 0;
+    this.savAddrBytes = 0;
+    this.savBytePos = 0;
+    this.savWriteEnabled = false;
+    this.savAddrSize = 3;
+    this.auxHold = false;
+    this.auxToBackup = false;
+    this.auxOut = 0xFF;
+  }
+
+  // Replace the save blob (caller responsible for fitting / extending).
+  loadSav(data: Uint8Array): void {
+    this.sav = new Uint8Array(Math.max(data.length, 0x100000));
+    this.sav.fill(0xFF);
+    this.sav.set(data, 0);
+    this.savDirty = false;
   }
 
   writeCmdByte(off: number, v: number): void { this.cmd[off & 7] = v & 0xFF; }
   readCmdByte(off: number): number { return this.cmd[off & 7]; }
 
-  writeAuxSpiCnt(v: number): void { this.auxspicnt = v & 0xFFFF; }
+  writeAuxSpiCnt(v: number): void {
+    const newHold = ((v >> 6) & 1) !== 0;
+    const newSelectBackup = ((v >> 13) & 1) !== 0;
+    // CS-hold falling 1 → 0 ends the current save transaction (chip
+    // deselect). The SDK writes hold = 1 for multi-byte, then 0 for
+    // the final byte; the falling edge then resets state for the next
+    // command.
+    if (this.auxHold && !newHold) {
+      this.savCmd = 0;
+      this.savAddrBytes = 0;
+      this.savBytePos = 0;
+    }
+    this.auxHold = newHold;
+    this.auxToBackup = newSelectBackup;
+    this.auxspicnt = v & 0xFFFF;
+  }
   readAuxSpiCnt(): number { return this.auxspicnt & 0xFFFF; }
-  readAuxSpiData(): number { return 0xFF; }      // empty save chip
-  writeAuxSpiData(_v: number): void { /* stubbed */ }
+  readAuxSpiData(): number { return this.auxOut & 0xFF; }
+  writeAuxSpiData(v: number): void {
+    if (!this.auxToBackup) {
+      // ROM-side AUXSPI access — not modeled separately; just clear.
+      this.auxOut = 0xFF;
+      return;
+    }
+    this.auxOut = this.savTickByte(v & 0xFF);
+  }
+
+  // SPI byte exchange with the save chip. Returns the byte the chip
+  // shifts out in this cycle. State is per-transaction (reset by CS
+  // release in writeAuxSpiCnt).
+  private savTickByte(byte: number): number {
+    const pos = this.savBytePos++;
+    if (pos === 0) {
+      this.savCmd = byte;
+      this.savAddr = 0;
+      this.savAddrBytes = 0;
+      // Single-byte commands (no further data) apply their effect on
+      // the command byte. The chip's response to byte 0 of any SPI
+      // exchange is the previous shift-out (= "0xFF for stale").
+      if (byte === 0x06) this.savWriteEnabled = true;        // WREN
+      else if (byte === 0x04) this.savWriteEnabled = false;  // WRDI
+      // Some commands carry an offset in the cmd byte itself:
+      // 0x0B/0x0A = "high-half" variants; they imply +0x100 on the
+      // computed address (for EEPROM 512 B).
+      return 0xFF;
+    }
+    switch (this.savCmd) {
+      case 0x05: {                                       // RDSR
+        // Bits 0,1 = WIP, WEL. We're never busy; report WEL state.
+        return (this.savWriteEnabled ? 0x02 : 0x00) | 0xF0;
+      }
+      case 0x06: this.savWriteEnabled = true;  return 0xFF;   // WREN
+      case 0x04: this.savWriteEnabled = false; return 0xFF;   // WRDI
+      case 0x01: {                                       // WRSR
+        // Status reg write — accept silently, ignore protect bits.
+        return 0xFF;
+      }
+      case 0x03: case 0x0B: {                            // READ / READ_HI
+        if (this.savAddrBytes < this.savAddrSize) {
+          this.savAddr = ((this.savAddr << 8) | byte) >>> 0;
+          this.savAddrBytes++;
+          if (this.savAddrBytes < this.savAddrSize) return 0xFF;
+          // Final address byte — apply high-variant offset for
+          // EEPROM 512 B encoding.
+          if (this.savCmd === 0x0B && this.savAddrSize === 1) {
+            this.savAddr += 0x100;
+          }
+          return 0xFF;
+        }
+        // Data phase — stream save bytes.
+        const a = this.savAddr++ & (this.sav.length - 1);
+        return this.sav[a] ?? 0xFF;
+      }
+      case 0x02: case 0x0A: {                            // WRITE / WRITE_HI
+        if (this.savAddrBytes < this.savAddrSize) {
+          this.savAddr = ((this.savAddr << 8) | byte) >>> 0;
+          this.savAddrBytes++;
+          if (this.savAddrBytes < this.savAddrSize) return 0xFF;
+          if (this.savCmd === 0x0A && this.savAddrSize === 1) {
+            this.savAddr += 0x100;
+          }
+          return 0xFF;
+        }
+        if (!this.savWriteEnabled) return 0xFF;
+        const a = this.savAddr++ & (this.sav.length - 1);
+        this.sav[a] = byte;
+        this.savDirty = true;
+        return 0xFF;
+      }
+      case 0x9F: {                                       // RDID (JEDEC ID)
+        // Three-byte JEDEC ID for a Macronix-like 1 MB FLASH.
+        if (pos === 1) return 0xC2;
+        if (pos === 2) return 0x20;
+        if (pos === 3) return 0x14;
+        return 0xFF;
+      }
+      default:
+        return 0xFF;
+    }
+  }
 
   // ---- ROMCTRL ----
   readRomCtrl(): number {

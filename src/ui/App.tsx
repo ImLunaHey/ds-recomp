@@ -209,6 +209,18 @@ export function App() {
   const loadFromBytes = useCallback((buf: Uint8Array, label: string) => {
     try {
       emu.loadRom(buf);
+      // Restore save data from localStorage if present. Per-ROM key so
+      // each game has its own slot. base64 since localStorage is text.
+      try {
+        const key = `ds-recomp:sav:${label}`;
+        const enc = window.localStorage?.getItem(key);
+        if (enc) {
+          const bin = atob(enc);
+          const sav = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) sav[i] = bin.charCodeAt(i);
+          emu.cart.loadSav(sav);
+        }
+      } catch { /* ignore corrupt/oversize entries */ }
       setRomBytes(buf);
       setSrc(label);
       setError(null);
@@ -217,6 +229,40 @@ export function App() {
       setError(e instanceof Error ? e.message : String(e));
     }
   }, [emu]);
+
+  // Periodically persist the cart save back to localStorage when dirty.
+  // Save chips write small amounts (a few KB typically); we just dump
+  // the whole 1 MB blob each time — base64 makes it ~1.4 MB, well under
+  // localStorage's 5 MB-per-origin browser limit. Frequency: every
+  // ~3 seconds while the game's running, plus on tab unload.
+  useEffect(() => {
+    let lastDump = 0;
+    const flush = (): void => {
+      if (!emu.cart.savDirty) return;
+      try {
+        const key = `ds-recomp:sav:${src}`;
+        const sav = emu.cart.sav;
+        let bin = '';
+        for (let i = 0; i < sav.length; i++) bin += String.fromCharCode(sav[i]);
+        window.localStorage?.setItem(key, btoa(bin));
+        emu.cart.savDirty = false;
+      } catch { /* quota exceeded — skip silently */ }
+    };
+    const tick = (): void => {
+      const now = performance.now();
+      if (now - lastDump > 3000) {
+        lastDump = now;
+        flush();
+      }
+    };
+    const interval = window.setInterval(tick, 1000);
+    window.addEventListener('beforeunload', flush);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener('beforeunload', flush);
+      flush();
+    };
+  }, [emu, src]);
 
   const loadBuiltin = useCallback(async (path: string) => {
     setRunning(false);
