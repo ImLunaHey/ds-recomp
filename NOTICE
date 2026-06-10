@@ -1,0 +1,11 @@
+This project includes code adapted from third-party projects under the
+following licenses:
+
+- guac NDS emulator (https://github.com/aabalke/guac)
+  © 2025 Aaron Balke, BSD-3-Clause
+  Specifically: the set of GBATEK-documented BIOS-RAM-Usage addresses
+  and well-known constants (NDS7 BIOS CRC, boot task value, cart
+  chip-ID-1/chip-ID-2 layout etc.) populated in src/cart/loader.ts
+  were cross-referenced from guac's emu/nds/mem/init.go. The address
+  values are derived from GBATEK (https://problemkaputt.de/gbatek.htm),
+  the canonical Nintendo DS documentation.

@@ -96,6 +96,16 @@ export class Emulator {
     this.load = loadNdsRom(rom, this.header, this.bus9, this.bus7, this.mem);
     this.overlays = loadAllOverlays(rom, this.header, this.bus9, this.bus7, this.mem);
     this.cart.loadRom(rom);
+    // Per GBATEK § "BIOS RAM Usage": firmware copies the user settings
+    // block from firmware[0x3FE00] to main RAM at 0x027FFC80. The
+    // loader can't do this because the firmware blob lives on Spi;
+    // patch it here after spi has been constructed.
+    const MAIN_RAM_MASK = 0x003FFFFF;
+    const fwUserStart = 0x3FE00;
+    const ramUserStart = 0x027FFC80 & MAIN_RAM_MASK;
+    for (let i = 0; i < 0x70; i++) {
+      this.mem.mainRam[ramUserStart + i] = this.spi.firmware[fwUserStart + i] ?? 0;
+    }
     this.resetCpus();
   }
 
