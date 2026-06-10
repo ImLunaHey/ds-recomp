@@ -163,6 +163,15 @@ export class Dma {
       // Step dest.
       if (c.dstMode === 0) dst = (dst + step) >>> 0;
       else if (c.dstMode === 1) dst = (dst - step) >>> 0;
+      // Real DS DMA updates DAD/SAD as the transfer progresses. Games
+      // that poll the registers expect to see them change. We do an
+      // atomic transfer so we can't model the per-cycle update — but
+      // a final writeback after every 64-word chunk keeps the visible
+      // state close enough for the polling patterns we've observed.
+      if ((i & 0x3F) === 0x3F) {
+        if (c.srcMode !== 3) c.src = src;
+        if (c.dstMode !== 3) c.dst = dst;
+      }
     }
     // Writeback (only when src/dst-mode 3 reload; otherwise keep moved values).
     if (c.srcMode !== 3) c.src = src;
