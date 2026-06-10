@@ -74,6 +74,33 @@ export class Cpu {
       this.cycles += 1;
       return 1;
     }
+    // Bad-branch guard: if a BLX/BX target was uninitialized (e.g. a
+    // game struct's function pointer slot was zero/garbage, like Brain
+    // Training's hit on a heap struct's +8 field), ARM9 would jump
+    // outside any valid memory region. Without intervention it'd
+    // NOP-sled through unmapped memory (which our bus returns as 0,
+    // decoding as conditional NOP) — runaway PC, no game progress.
+    // Instead, detect PC in clearly-invalid regions and force a BX LR
+    // return so the calling function can recover. Valid regions:
+    //   0x00000000-0x00007FFF (BIOS)
+    //   0x01FF8000-0x01FFEFFF (SDK runtime autoloaded in IWRAM/DTCM)
+    //   0x02000000-0x023FFFFF (main RAM)
+    //   0x03000000-0x03FFFFFF (WRAM + IWRAM mirror)
+    //   0xFFFF0000-0xFFFFFFFF (BIOS high vectors)
+    const inValid =
+      (decode < 0x00010000) ||
+      (decode >= 0x01000000 && decode < 0x02400000) ||
+      (decode >= 0x03000000 && decode < 0x04000000) ||
+      (decode >= 0xFFFF0000);
+    if (!inValid) {
+      // Simulate BX LR: jump back to caller.
+      const lr = s.r[14] >>> 0;
+      if (lr & 1) { s.cpsr |= FLAG_T; s.r[15] = lr & ~1; }
+      else        { s.cpsr &= ~FLAG_T; s.r[15] = lr & ~3; }
+      this.flushPipeline();
+      this.cycles += 1;
+      return 1;
+    }
 
     const insnSize = isThumb ? 2 : 4;
     const prefetchOff = isThumb ? 4 : 8;
