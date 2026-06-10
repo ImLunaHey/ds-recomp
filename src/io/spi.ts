@@ -63,12 +63,34 @@ export class Spi {
     //   0x14-0x1F: ARM9 GUI/menu CRC, ARM7 GUI/menu CRC etc.
     // Many games verify these CRCs match; without real firmware bytes
     // we just stamp plausible non-zero values so the verifier passes.
-    f[0x00] = 0xFF; f[0x01] = 0x00;    // version: anything non-zero
-    f[0x14] = 0x00; f[0x15] = 0x00;    // ARM9 GUI CRC — leave zero, may fail verify
-    // 0x20-0x3C is "data offset 1" region with WiFi calibration headers
-    // and various CRC values. Stamping the area with 0xFF prevents games
-    // from interpreting it as valid pre-existing config (= no config).
-    for (let i = 0x20; i < 0x40; i++) f[i] = 0xFF;
+    // Populate the firmware header to a plausible retail layout. The
+    // 16-bit offsets here are in 8-byte units. Values mirror what
+    // typical retail firmware (consistent with melonDS's HLE) emits:
+    // GUI bootcode lives just past the header.
+    const w16h = (a: number, v: number): void => { f[a] = v & 0xFF; f[a + 1] = (v >> 8) & 0xFF; };
+    w16h(0x00, 0x0020);     // ARM9 GUI offset / 8 (= 0x100)
+    w16h(0x02, 0x0040);     // ARM7 GUI offset / 8 (= 0x200)
+    w16h(0x04, 0x0080);     // panic offset / 8
+    w16h(0x06, 0x7F00);     // WiFi data offset / 8 (≈ 0x3F800)
+    w16h(0x08, 0x3FF8);     // ARM9 boot RAM dest >> 8
+    w16h(0x0A, 0x3FF8);     // ARM7 boot RAM dest >> 8
+    f[0x0C] = 0xFF;          // type (retail)
+    f[0x0D] = 0x00;          // bootcode CRC8 (placeholder)
+    w16h(0x0E, 0x4D17);     // timestamp (arbitrary)
+    f[0x1D] = 0x05;          // firmware version
+    // 0x14-0x1F: CRCs over the GUI code regions. Stamp computed CRCs
+    // over zero-filled GUI regions so verifiers see "code = zeros, CRC
+    // = CRC(zeros)" and accept it as consistent (real games only check
+    // these to detect firmware corruption — they don't verify against
+    // a specific known-good value).
+    const arm9GuiStart = 0x100, arm9GuiLen = 0x800;
+    const arm7GuiStart = 0x200, arm7GuiLen = 0x800;
+    w16h(0x14, crc16ccitt(f, arm9GuiStart, arm9GuiLen));
+    w16h(0x16, crc16ccitt(f, arm7GuiStart, arm7GuiLen));
+    // WiFi calibration / RF settings live at the offset stamped in
+    // header[0x06]. Region 0x3F800-0x3FBFF holds calibration data;
+    // leaving these zero-filled is generally safe for retail games
+    // that only do WiFi setup on first boot (we never reach that).
     // User-settings block at the end of firmware.
     const off = 0x3FE00;
 
