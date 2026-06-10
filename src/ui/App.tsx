@@ -598,8 +598,22 @@ export function App() {
             ref={bottomCanvasRef}
             width={SCREEN_W}
             height={SCREEN_H}
-            className="block [image-rendering:pixelated]"
+            className="block [image-rendering:pixelated] cursor-crosshair touch-none"
             style={{ width: SCREEN_W * 2, height: SCREEN_H * 2 }}
+            onPointerDown={(e) => {
+              (e.currentTarget as HTMLCanvasElement).setPointerCapture(e.pointerId);
+              const rect = e.currentTarget.getBoundingClientRect();
+              emu.spi.touchX = Math.floor((e.clientX - rect.left) * SCREEN_W / rect.width);
+              emu.spi.touchY = Math.floor((e.clientY - rect.top) * SCREEN_H / rect.height);
+            }}
+            onPointerMove={(e) => {
+              if (emu.spi.touchX === null) return;
+              const rect = e.currentTarget.getBoundingClientRect();
+              emu.spi.touchX = Math.floor((e.clientX - rect.left) * SCREEN_W / rect.width);
+              emu.spi.touchY = Math.floor((e.clientY - rect.top) * SCREEN_H / rect.height);
+            }}
+            onPointerUp={() => { emu.spi.touchX = null; emu.spi.touchY = null; }}
+            onPointerCancel={() => { emu.spi.touchX = null; emu.spi.touchY = null; }}
           />
         </div>
 
