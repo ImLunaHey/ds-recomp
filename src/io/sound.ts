@@ -15,10 +15,22 @@
 //
 // We model state + reads + writes faithfully — channels can be "key on",
 // will report key-off after their sample length elapses (driven from
-// SoundCount). No actual audio output yet; the registers are stored
-// so games that poll channel-done bits work correctly.
+// SoundCount). The mix() method additionally produces actual audio
+// samples by walking each enabled channel's source memory at its
+// timer-derived rate; the Web Audio bridge in src/audio/audio_bridge.ts
+// pulls these into an AudioContext output buffer.
 
+// NDS sound clock — every channel's timer counts up at 33.514 MHz and
+// triggers a sample fetch on overflow, so sampleRate = clock /
+// (0x10000 - tmr).
+const NDS_SOUND_CLOCK = 33_513_982;
 const NUM_CHANNELS = 16;
+
+// SOUND_CNT format bits (bits 30:29).
+const FMT_PCM8  = 0;
+const FMT_PCM16 = 1;
+const FMT_ADPCM = 2;
+const FMT_PSG   = 3;
 
 interface Channel {
   cnt: number;        // 32-bit SOUND_CNT — bit 31 = key on/busy
@@ -29,11 +41,25 @@ interface Channel {
   // Internal: cycles remaining until the sample would naturally end.
   // Counted down by step(); when it hits 0 we clear the key-on bit.
   cyclesLeft: number;
+  // Mixer cursor — fractional sample position within the channel's
+  // source data, in *source* sample units (PCM8 byte index or PCM16
+  // halfword index). Advanced by mix() according to the ratio of the
+  // channel's NDS sample rate to the audio output rate.
+  posFrac: number;
+}
+
+// Minimal memory accessor the mixer needs. We only support reading
+// from main RAM (where DS sound samples virtually always live); VRAM
+// would need bank routing and isn't worth the complexity for the
+// audio bridge's smoke-test scope. Out-of-region reads return 0 so
+// unmapped sources come back as silence rather than a crash.
+export interface SoundMemory {
+  mainRam: Uint8Array;
 }
 
 export class Sound {
   channels: Channel[] = Array.from({ length: NUM_CHANNELS }, () => ({
-    cnt: 0, sad: 0, tmr: 0, pnt: 0, len: 0, cyclesLeft: 0,
+    cnt: 0, sad: 0, tmr: 0, pnt: 0, len: 0, cyclesLeft: 0, posFrac: 0,
   }));
   soundcnt = 0;
   soundbias = 0x200;       // default mid-rail
@@ -43,6 +69,10 @@ export class Sound {
   sndcap1dad = 0;
   sndcap0len = 0;
   sndcap1len = 0;
+  // Memory the mixer reads sample data from. Optional — when null,
+  // mix() emits silence. Wired up by the audio bridge when the user
+  // enables sound output.
+  mem: SoundMemory | null = null;
 
   // Map an address in 0x04000400-0x040005FF to byte access on our state.
   // Returns the byte value at that address (defaults to 0).
@@ -96,6 +126,9 @@ export class Sound {
       // Key-on edge — bit 31 of cnt going 0 → 1.
       if (off === 3 && ((before >>> 31) & 1) === 0 && ((c.cnt >>> 31) & 1) === 1) {
         this.startChannel(c);
+        // Restart the mixer cursor at the beginning of the sample so
+        // we don't leak position state across key-on cycles.
+        c.posFrac = 0;
       }
       return;
     }
@@ -144,5 +177,132 @@ export class Sound {
         }
       }
     }
+  }
+
+  // Per-channel volume (cnt bits 0..6, 0..127) and panning (bits 16..22,
+  // 0=left, 64=center, 127=right). We normalize both to [0,1] floats
+  // and apply equal-power-ish linear pan.
+  private channelGains(c: Channel): { l: number; r: number } {
+    const vol = (c.cnt & 0x7F) / 127;
+    const pan = ((c.cnt >> 16) & 0x7F) / 127;
+    // Linear pan — close enough for a smoke-test mixer, and matches
+    // what most emulators do. (Real hardware uses a logarithmic
+    // volume curve but we'd need lookup tables.)
+    return { l: vol * (1 - pan), r: vol * pan };
+  }
+
+  // Fetch one source sample for `c` at integer source-position `pos`,
+  // returning a signed value in roughly [-1, 1]. PSG / ADPCM return
+  // 0 (silent placeholder) until proper decoders land.
+  private fetchSample(c: Channel, pos: number): number {
+    if (!this.mem) return 0;
+    const ram = this.mem.mainRam;
+    const fmt = (c.cnt >> 29) & 0x3;
+    if (fmt === FMT_PCM8) {
+      // 1 byte per source sample. SOUND_LEN is in halfwords so the
+      // PCM8 sample count is len*2 (each halfword = 2 bytes = 2 samples).
+      const byteIdx = (c.sad + pos) >>> 0;
+      const offset = byteIdx - 0x02000000;
+      if (offset < 0 || offset >= ram.length) return 0;
+      // PCM8 is signed 8-bit, two's complement.
+      const u = ram[offset];
+      const s = u < 0x80 ? u : u - 0x100;
+      return s / 128;
+    }
+    if (fmt === FMT_PCM16) {
+      // 2 bytes per source sample. SOUND_LEN halfwords = sample count.
+      const byteIdx = (c.sad + pos * 2) >>> 0;
+      const offset = byteIdx - 0x02000000;
+      if (offset < 0 || offset + 1 >= ram.length) return 0;
+      const lo = ram[offset];
+      const hi = ram[offset + 1];
+      const u = (lo | (hi << 8)) & 0xFFFF;
+      const s = u < 0x8000 ? u : u - 0x10000;
+      return s / 32768;
+    }
+    // PSG-pulse and IMA-ADPCM not yet implemented — emit silence.
+    return 0;
+  }
+
+  // Total number of *source* samples in the channel (i.e. how far the
+  // cursor can walk before needing to loop / stop). For PCM8 it's
+  // len*2 bytes; for PCM16 it's len halfwords. Repeat / loop-point
+  // wrap is handled per-format in stepCursor below.
+  private channelSampleCount(c: Channel): number {
+    const fmt = (c.cnt >> 29) & 0x3;
+    if (fmt === FMT_PCM8)  return (c.len >>> 0) * 2;
+    if (fmt === FMT_PCM16) return (c.len >>> 0);
+    return 0;
+  }
+
+  // Loop-point in source-sample units (same scale as channelSampleCount).
+  private channelLoopStart(c: Channel): number {
+    const fmt = (c.cnt >> 29) & 0x3;
+    // SOUND_PNT is in halfwords; convert to bytes for PCM8.
+    if (fmt === FMT_PCM8)  return (c.pnt & 0xFFFF) * 2;
+    if (fmt === FMT_PCM16) return (c.pnt & 0xFFFF);
+    return 0;
+  }
+
+  // Generate `numSamples` interleaved stereo Float32 samples at the
+  // given output sample rate. Walks every key-on channel, decodes its
+  // current source, applies vol+pan, and accumulates into the buffer.
+  // Output samples are roughly in [-1, 1] after the final master-
+  // volume divide; we let the AudioContext's destination clip.
+  mix(numSamples: number, outputRate: number): Float32Array {
+    const out = new Float32Array(numSamples * 2);
+    // SOUNDCNT bit 15 = master enable. When 0, hardware mutes all
+    // channels; we honor that here.
+    if ((this.soundcnt & 0x8000) === 0) return out;
+    // Master vol (SOUNDCNT bits 0..6, 0..127). Channel mix is already
+    // in [-1, 1]; divide by NUM_CHANNELS so the worst-case all-channels-
+    // hot mix stays clip-safe.
+    const masterVol = (this.soundcnt & 0x7F) / 127;
+    const masterScale = masterVol / NUM_CHANNELS;
+
+    for (let i = 0; i < NUM_CHANNELS; i++) {
+      const c = this.channels[i];
+      if ((c.cnt >>> 31) === 0) continue;       // not playing
+      const fmt = (c.cnt >> 29) & 0x3;
+      // Skip unimplemented formats — leaves them at the silent
+      // placeholder so they don't waste cycles in the inner loop.
+      if (fmt === FMT_PSG || fmt === FMT_ADPCM) continue;
+      const period = (0x10000 - (c.tmr & 0xFFFF)) || 1;
+      const chanRate = NDS_SOUND_CLOCK / period;
+      // Source samples to advance per output sample.
+      const step = chanRate / outputRate;
+      const totalSamples = this.channelSampleCount(c);
+      if (totalSamples === 0) continue;
+      const repeat = (c.cnt >> 27) & 0x3;
+      const loopStart = this.channelLoopStart(c);
+      const { l: gL, r: gR } = this.channelGains(c);
+
+      let pos = c.posFrac;
+      for (let n = 0; n < numSamples; n++) {
+        if (pos >= totalSamples) {
+          if (repeat === 1) {
+            // Loop back to the loop-point, preserving fractional phase
+            // so the pitch doesn't glitch at the wrap boundary.
+            const tail = pos - totalSamples;
+            const span = totalSamples - loopStart;
+            if (span > 0) pos = loopStart + (tail % span);
+            else { pos = loopStart; }
+          } else {
+            // One-shot ended mid-buffer — stop emitting for this
+            // channel and clear the key-on bit so the rest of the
+            // step loop sees it as done.
+            c.cnt = (c.cnt & 0x7FFFFFFF) >>> 0;
+            break;
+          }
+        }
+        const sIdx = Math.floor(pos);
+        const s = this.fetchSample(c, sIdx);
+        out[n * 2]     += s * gL * masterScale;
+        out[n * 2 + 1] += s * gR * masterScale;
+        pos += step;
+      }
+      c.posFrac = pos;
+    }
+    return out;
   }
 }

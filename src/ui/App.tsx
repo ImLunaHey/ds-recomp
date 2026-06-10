@@ -4,6 +4,7 @@ import { unitCodeName } from '../cart/header';
 import { decodeBannerIcon, decodeBannerTitle } from '../cart/banner';
 import { disasmArm } from '../cpu/disasm';
 import { SCREEN_W, SCREEN_H } from '../ppu/ppu';
+import { startAudio, stopAudio } from '../audio/audio_bridge';
 
 // Virtual control-pad button. ext=true → extKeyinput bit, otherwise
 // keyinput bit. Uses Pointer events so mouse + touch both work and the
@@ -319,6 +320,11 @@ export function App() {
   const [running, setRunning] = useState(false);
   const [tick, setTick] = useState(0);
   const [stats, setStats] = useState({ arm9: 0, arm7: 0, frame: 0, fps: 0 });
+  // Audio output toggle. OFF by default — browser autoplay policy
+  // forbids us from creating an AudioContext at load time, and the
+  // user might not want sound anyway. Flipping this on calls
+  // startAudio() from within the user-gesture click handler.
+  const [audioOn, setAudioOn] = useState(false);
 
   const iconCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const topCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -608,6 +614,27 @@ export function App() {
             }}
           >
             ⟲ Reset
+          </button>
+          <button
+            className={`px-4 py-2 rounded text-white text-sm font-semibold border ${
+              audioOn
+                ? 'bg-amber-600 hover:bg-amber-500 border-amber-400'
+                : 'bg-zinc-700 hover:bg-zinc-600 border-zinc-500'
+            }`}
+            title="Toggle Web Audio output. Mixes the 16 NDS channels (PCM8/PCM16) to the browser's audio."
+            onClick={() => {
+              if (audioOn) {
+                stopAudio(emu.io7.sound);
+                setAudioOn(false);
+              } else {
+                // Must happen inside a user-gesture handler — browsers
+                // block AudioContext creation outside one.
+                startAudio(emu.io7.sound, emu.mem);
+                setAudioOn(true);
+              }
+            }}
+          >
+            {audioOn ? '🔊 Audio' : '🔇 Audio'}
           </button>
           <button
             className="px-4 py-2 rounded bg-indigo-700 hover:bg-indigo-600 text-white text-sm border border-indigo-500"
