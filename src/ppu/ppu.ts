@@ -117,6 +117,35 @@ export class Ppu {
   // NSMB's crt0 has stamped it (around frame 64). We watch for that
   // exact pattern every VBlank and install the thunk lazily.
   private nsmbThunkInstalled = false;
+  // Deadlock detector: many retail games' SDK runtimes enter a state
+  // where ARM9 has WFI'd waiting for an IPC FIFO message from ARM7,
+  // but ARM7's bring-up code never reaches the send site because of
+  // some missing init (firmware data, cart key1, etc.). If we see no
+  // real IPC FIFO traffic for 60+ frames AND both CPUs have FIFOs
+  // enabled and at least one side has been doing IPC SYNC handshake
+  // recently, synthesize a single 7→9 message to wake ARM9. This is
+  // a heuristic but it's gated tightly enough not to disturb test
+  // ROMs (RockWrestler's IPC FIFO test sends within ~10 frames of
+  // enabling its FIFO).
+  private applyIpcDeadlockHeartbeat(): void {
+    if (!this.ipc) return;
+    this.ipc.framesSinceLastSend++;
+    if (!this.ipc.enable7 || !this.ipc.enable9) return;
+    // Long quiet window required. RockWrestler's MEMORY → VRAM CNT
+    // test legitimately pauses up to several seconds between FIFO
+    // transactions while ARM9 navigates menus, so 60 frames was too
+    // short; 300 (5 s) is safely past any normal game's pause.
+    if (this.ipc.framesSinceLastSend < 300) return;
+    if (this.ipc.q7to9.size > 0) return;
+    // Empirical: synthetic FIFO injections crashed Pokemon Platinum
+    // (ARM9 PC ended up at 0x30 = BIOS undefined-vector area) without
+    // producing visible benefit for NSMB. Leaving the framework wired
+    // but disabled — the right value to inject is game-specific and
+    // requires per-ROM protocol RE.
+    // this.ipc.writeSend(false, 0x0000006B, true);
+    this.ipc.framesSinceLastSend = -600;
+  }
+
   private applyNsmbFsThunk(ram: Uint8Array): void {
     if (this.nsmbThunkInstalled) return;
     const tagOff = 0x96114;           // 0x02096114 & 0x3FFFFF
@@ -194,6 +223,7 @@ export class Ppu {
       ram[off + 2] = (v >> 16) & 0xFF;
       ram[off + 3] = (v >> 24) & 0xFF;
       this.applyNsmbFsThunk(ram);
+      this.applyIpcDeadlockHeartbeat();
       // applyPokemonIplStamp(): tried and reverted — passing the
       // 0x3130 validation at 0x020243ba lets Pokemon's ARM9 fall
       // through into post-validation init code that we don't yet

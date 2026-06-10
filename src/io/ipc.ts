@@ -80,6 +80,11 @@ export class Ipc {
   // synthesize a beacon (only when the game itself hasn't established
   // IPC FIFO traffic).
   realFifoTrafficSeen = false;
+  // Tracks frames since last real FIFO send by either side. Used to
+  // detect deadlocked retail games (60+ frames with no IPC) without
+  // disturbing test ROMs that ARE doing IPC and just happen to be
+  // slow.
+  framesSinceLastSend = 0;
 
   constructor(irq9: Irq, irq7: Irq) {
     this.irq9 = irq9;
@@ -162,7 +167,7 @@ export class Ipc {
   writeSend(isArm9: boolean, value: number, synthetic = false): void {
     const enable = isArm9 ? this.enable9 : this.enable7;
     if (!enable) return;
-    if (!synthetic) this.realFifoTrafficSeen = true;
+    if (!synthetic) { this.realFifoTrafficSeen = true; this.framesSinceLastSend = 0; }
     const q = isArm9 ? this.q9to7 : this.q7to9;
     const remoteRecvNotEmptyEn = isArm9 ? this.recvNotEmptyIrqEn7 : this.recvNotEmptyIrqEn9;
     const remoteIrq = isArm9 ? this.irq7 : this.irq9;
