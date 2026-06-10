@@ -130,6 +130,16 @@ function renderEngine(ppu: Ppu, dispcnt: number, fb: Uint8ClampedArray, isEngine
       }
     }
 
+    // 3D engine overrides BG0 (Engine A only) when DISPCNT bit 3 is set.
+    // GX writes BGR555 | 0x8000 for "drawn" pixels, matching our format.
+    if (isEngineA && (dispcnt & 0x8) !== 0) {
+      const fbFront = ppu.gx.fbFront;
+      const rowBase = y * SCREEN_W;
+      for (let x = 0; x < SCREEN_W; x++) {
+        bgLines[0][x] = fbFront[rowBase + x];
+      }
+    }
+
     // OBJ layer.
     if (objEnabled) {
       const mosaicReg = isEngineA ? ppu.mosaicA : ppu.mosaicB;

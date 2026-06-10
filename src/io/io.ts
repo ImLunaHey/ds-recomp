@@ -36,6 +36,11 @@ export class IoBus {
   postflg = 1;
   // HALTCNT — write 0x80 puts the CPU into halt.
   haltcnt = 0;
+  // Latch for partial (8/16-bit) writes into 32-bit-only GX ports
+  // (0x04000400 and 0x04000440..0x040005FF). Keyed by word-aligned addr;
+  // mask tracks which bytes have arrived. Word fires when mask == 0xF.
+  gxLatch = new Map<number, number>();
+  gxLatchMask = new Map<number, number>();
   // Captured KEYINPUT — bits LOW = pressed. Default all up = 0x3FF.
   keyinput = 0x03FF;
   extKeyinput = 0x007F;   // X, Y, lid open (low = active)
@@ -61,6 +66,37 @@ export class IoBus {
     // 0x04000280..0x040002BF
     const masked = addr & 0x0FFFFFFF;
     return masked >= 0x04000280 && masked < 0x040002C0;
+  }
+
+  // Is this a GX port (FIFO at 0x04000400 or direct cmd at 0x440..0x5FF)?
+  private isGxAddr(addr: number): boolean {
+    const masked = addr & 0x0FFFFFFF;
+    if (masked === 0x04000400) return true;
+    return masked >= 0x04000440 && masked < 0x04000600;
+  }
+
+  // Accumulate partial bytes for a 32-bit-only GX port. width is 1 or 2
+  // (byte or half-word). When all 4 bytes of a word have arrived, fire
+  // writeFifo / writeDirect with the assembled u32.
+  private gxPartialWrite(addr: number, value: number, width: 1 | 2): void {
+    const wordAddr = addr & ~0x3;
+    const off = addr & 0x3;
+    const shift = off * 8;
+    const fieldMask = width === 1 ? (0xFF << shift) : (0xFFFF << shift);
+    const fieldVal = width === 1 ? ((value & 0xFF) << shift) : ((value & 0xFFFF) << shift);
+    const cur = this.gxLatch.get(wordAddr) ?? 0;
+    const next = ((cur & ~fieldMask) | fieldVal) >>> 0;
+    const byteBits = width === 1 ? (1 << off) : (0x3 << off);
+    const mask = (this.gxLatchMask.get(wordAddr) ?? 0) | byteBits;
+    this.gxLatch.set(wordAddr, next);
+    this.gxLatchMask.set(wordAddr, mask);
+    if (mask === 0xF) {
+      this.gxLatch.delete(wordAddr);
+      this.gxLatchMask.delete(wordAddr);
+      const maskedWord = wordAddr & 0x0FFFFFFF;
+      if (maskedWord === 0x04000400) this.ppu.gx.writeFifo(next);
+      else this.ppu.gx.writeDirect(maskedWord, next);
+    }
   }
 
   read32(addr: number): number {
@@ -198,6 +234,16 @@ export class IoBus {
       this.cart.writeRomCtrl(v >>> 0);
       return;
     }
+    // GX: GXFIFO (0x04000400, 32-bit only) and direct command ports
+    // (0x04000440..0x040005FF). ARM9-only.
+    if (this.isArm9) {
+      const masked = addr & 0x0FFFFFFF;
+      if (masked === 0x04000400) { this.ppu.gx.writeFifo(v >>> 0); return; }
+      if (masked >= 0x04000440 && masked < 0x04000600) {
+        this.ppu.gx.writeDirect(masked & ~0x3, v >>> 0);
+        return;
+      }
+    }
     this.write16(addr, v & 0xFFFF);
     this.write16((addr + 2) >>> 0, (v >>> 16) & 0xFFFF);
   }
@@ -208,6 +254,12 @@ export class IoBus {
     if ((addr & 0x0FFFFFFF) === 0x04000180) { this.ipc.writeSync(this.isArm9, v & 0xFFFF); return; }
     if ((addr & 0x0FFFFFFF) === 0x04000184) { this.ipc.writeCnt(this.isArm9, v & 0xFFFF);  return; }
     if ((addr & 0x0FFFFFFF) === 0x040001A0) { this.cart.writeAuxSpiCnt(v & 0xFFFF);         return; }
+    // GX ports are 32-bit-only; accumulate half-word writes into the
+    // surrounding word and fire when complete. ARM9-only.
+    if (this.isArm9 && this.isGxAddr(addr)) {
+      this.gxPartialWrite(addr, v & 0xFFFF, 2);
+      return;
+    }
     this.write8(addr, v & 0xFF);
     this.write8((addr + 1) >>> 0, (v >>> 8) & 0xFF);
   }
@@ -215,6 +267,12 @@ export class IoBus {
     addr = addr & 0x0FFFFFFF;
     if (this.isDmaAddr(addr | 0x04000000)) { this.dma.write8(addr, v); return; }
     if (this.math && addr >= 0x04000280 && addr < 0x040002C0) { this.math.write8(addr, v); return; }
+    // GX ports are 32-bit-only; accumulate single bytes into the
+    // surrounding word and fire when complete. ARM9-only.
+    if (this.isArm9 && this.isGxAddr(addr | 0x04000000)) {
+      this.gxPartialWrite(addr, v & 0xFF, 1);
+      return;
+    }
     if (addr >= 0x04000000 && addr < 0x04000004) {
       const shift = (addr & 3) * 8;
       this.ppu.dispcntA = ((this.ppu.dispcntA & ~(0xFF << shift)) | ((v & 0xFF) << shift)) >>> 0;

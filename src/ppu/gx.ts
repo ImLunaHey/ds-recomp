@@ -1,0 +1,421 @@
+// Minimal viable DS 3D engine. Parses the GXFIFO command stream
+// (writes to 0x04000400 are packed-cmd bytes, writes to 0x04000440+
+// are individual command parameters), maintains a 4x4 matrix stack
+// per mode (projection / position / vector / texture), transforms
+// incoming vertices, and software-rasterizes triangles into a
+// 256x192 BGR555 framebuffer that Engine A's BG0 layer can pull
+// from.
+//
+// What's IMPLEMENTED (enough to draw an untextured triangle):
+//   - MTX_MODE / MTX_IDENTITY / MTX_LOAD_4x4 / MTX_LOAD_4x3 /
+//     MTX_MULT_4x4 / MTX_MULT_4x3 / MTX_PUSH / MTX_POP / MTX_TRANS
+//   - COLOR (vertex color, 5-5-5 RGB)
+//   - VTX_16 (3 × s16 fixed-point coordinates, 4.12 format)
+//   - VTX_10 / VTX_XY / VTX_XZ / VTX_YZ / VTX_DIFF (partial coords)
+//   - BEGIN_VTXS / END_VTXS (primitive type)
+//   - SWAP_BUFFERS (latch the current scene to the visible buffer)
+//   - VIEWPORT (full-screen by default)
+// What's NOT yet:
+//   - Textures, lighting (NORMAL/TEXCOORD/MATERIAL just no-op)
+//   - Z buffer + W-buffer mode
+//   - Polygon clipping (off-screen triangles skipped)
+//   - Toon / highlight tables, fog, edge marking, anti-alias
+//   - Capture (DISPCAPCNT)
+
+import type { SharedMemory } from '../memory/shared';
+import type { Irq } from '../io/irq';
+
+export const GX_SCREEN_W = 256;
+export const GX_SCREEN_H = 192;
+
+const MTX_MODE_PROJ = 0;
+const MTX_MODE_POS  = 1;
+const MTX_MODE_POSVEC = 2;       // proxies both pos and vector
+const MTX_MODE_TEX  = 3;
+
+interface Vec4 { x: number; y: number; z: number; w: number; }
+interface Vertex {
+  // Post-transform clip coords
+  x: number; y: number; z: number; w: number;
+  color: number;          // packed BGR555
+}
+
+function mat4Identity(): Float64Array {
+  const m = new Float64Array(16);
+  m[0] = m[5] = m[10] = m[15] = 1;
+  return m;
+}
+
+function mat4Mul(out: Float64Array, a: Float64Array, b: Float64Array): void {
+  // out = a * b. We compute into a temporary so the same buffer can be
+  // both source and dest.
+  const t = new Float64Array(16);
+  for (let i = 0; i < 4; i++) {
+    for (let j = 0; j < 4; j++) {
+      let s = 0;
+      for (let k = 0; k < 4; k++) s += a[i + k * 4] * b[k + j * 4];
+      t[i + j * 4] = s;
+    }
+  }
+  out.set(t);
+}
+
+function mat4Apply(m: Float64Array, x: number, y: number, z: number, w: number): Vec4 {
+  return {
+    x: m[0]  * x + m[4] * y + m[8]  * z + m[12] * w,
+    y: m[1]  * x + m[5] * y + m[9]  * z + m[13] * w,
+    z: m[2]  * x + m[6] * y + m[10] * z + m[14] * w,
+    w: m[3]  * x + m[7] * y + m[11] * z + m[15] * w,
+  };
+}
+
+// Each GX command takes a fixed number of parameter words.
+// Indexed by command opcode (0..0x7F-ish).
+const CMD_PARAMS: { [op: number]: number } = {
+  0x10: 1, 0x11: 0, 0x12: 1, 0x13: 1, 0x14: 1, 0x15: 0,
+  0x16: 16, 0x17: 12, 0x18: 16, 0x19: 12, 0x1A: 9, 0x1B: 3, 0x1C: 3,
+  0x20: 1, 0x21: 1, 0x22: 1, 0x23: 2, 0x24: 1, 0x25: 1, 0x26: 1, 0x27: 1, 0x28: 1, 0x29: 1, 0x2A: 1, 0x2B: 1,
+  0x30: 1, 0x31: 1, 0x32: 1, 0x33: 1, 0x34: 32,
+  0x40: 1, 0x41: 0,
+  0x50: 1, 0x60: 1, 0x70: 3, 0x71: 2, 0x72: 1,
+};
+
+export class Gx {
+  mem: SharedMemory;
+  irq9: Irq;
+
+  // Front and back framebuffer. We render into back, and SWAP_BUFFERS
+  // promotes it to front so Engine A reads stable content.
+  fbBack  = new Uint16Array(GX_SCREEN_W * GX_SCREEN_H);
+  fbFront = new Uint16Array(GX_SCREEN_W * GX_SCREEN_H);
+
+  // Matrix stacks. Position stack is 31 deep, projection 1 deep.
+  matProj = mat4Identity();
+  matPos  = mat4Identity();
+  matVec  = mat4Identity();
+  matTex  = mat4Identity();
+  posStack: Float64Array[] = [];
+  projStack: Float64Array[] = [];
+  vecStack: Float64Array[] = [];
+
+  matMode = MTX_MODE_PROJ;
+
+  // Vertex assembly.
+  primType = -1;       // -1 = not in a BEGIN_VTXS block
+  vertexBuf: Vertex[] = [];
+  currentColor = 0x7FFF;     // white
+  lastVtxX = 0; lastVtxY = 0; lastVtxZ = 0;     // for VTX_DIFF + partial coords
+
+  // Command queue (the actual GXFIFO between CPU writes and our processor).
+  // Each entry is { op: number, params: number[] }.
+  cmdQueue: Array<{ op: number; params: number[] }> = [];
+  // Partial command being assembled while bytes stream in.
+  pendingOps: number[] = [];        // up to 4 opcodes per packed write
+  pendingParams: number[] = [];     // params accumulated for the FIRST op in pendingOps
+
+  constructor(mem: SharedMemory, irq9: Irq) {
+    this.mem = mem;
+    this.irq9 = irq9;
+  }
+
+  // GXFIFO at 0x04000400 — write a packed command word. The low byte
+  // is the first opcode; subsequent bytes are additional opcodes if
+  // any. After each opcode is taken from the packed word, its params
+  // (CMD_PARAMS[op]) words follow as subsequent 32-bit writes.
+  writeFifo(cmd: number): void {
+    if (this.pendingOps.length === 0) {
+      // Unpack 4 op bytes.
+      for (let i = 0; i < 4; i++) {
+        const op = (cmd >>> (i * 8)) & 0xFF;
+        if (op !== 0) this.pendingOps.push(op);
+      }
+      // First op may have 0 params — try to drain those right away.
+      this.tryDrain();
+      return;
+    }
+    // We're streaming params for pendingOps[0]. Buffer this word.
+    this.pendingParams.push(cmd);
+    this.tryDrain();
+  }
+
+  // Direct command ports at 0x04000440+. The register offset encodes
+  // the opcode: regOff = (op - 0x10) * 4 (per GBATEK). Each port write
+  // is a single parameter — we accumulate as for the FIFO version.
+  writeDirect(regAddr: number, value: number): void {
+    const op = ((regAddr - 0x04000440) >>> 2) + 0x10;
+    if (this.pendingOps.length > 0 && this.pendingOps[0] === op) {
+      this.pendingParams.push(value);
+    } else {
+      // Start a new direct-cmd sequence.
+      this.pendingOps = [op];
+      this.pendingParams = [value];
+    }
+    this.tryDrain();
+  }
+
+  private tryDrain(): void {
+    while (this.pendingOps.length > 0) {
+      const op = this.pendingOps[0];
+      const need = CMD_PARAMS[op] ?? 0;
+      if (this.pendingParams.length < need) return;
+      const params = this.pendingParams.slice(0, need);
+      this.executeCommand(op, params);
+      this.pendingParams = this.pendingParams.slice(need);
+      this.pendingOps.shift();
+    }
+  }
+
+  private executeCommand(op: number, p: number[]): void {
+    switch (op) {
+      case 0x10: this.matMode = p[0] & 0x3; return;
+      case 0x11: this.matrixPush(); return;
+      case 0x12: this.matrixPop(p[0] & 0x3F); return;
+      case 0x15: this.matrixLoad(mat4Identity()); return;
+      case 0x16: this.matrixLoad(this.unpack4x4(p)); return;
+      case 0x17: this.matrixLoad(this.unpack4x3(p)); return;
+      case 0x18: this.matrixMult(this.unpack4x4(p)); return;
+      case 0x19: this.matrixMult(this.unpack4x3(p)); return;
+      case 0x1A: this.matrixMult(this.unpack3x3(p)); return;
+      case 0x1B: this.matrixMult(this.makeScale(p[0], p[1], p[2])); return;
+      case 0x1C: this.matrixMult(this.makeTranslate(p[0], p[1], p[2])); return;
+      case 0x20: this.currentColor = this.unpackColor(p[0]); return;
+      case 0x23: this.vertex16(p[0], p[1]); return;
+      case 0x24: this.vertex10(p[0]); return;
+      case 0x25: this.vertexPartial(p[0], 'XY'); return;
+      case 0x26: this.vertexPartial(p[0], 'XZ'); return;
+      case 0x27: this.vertexPartial(p[0], 'YZ'); return;
+      case 0x28: this.vertexDiff(p[0]); return;
+      case 0x40: this.beginVertices(p[0] & 0x3); return;
+      case 0x41: this.endVertices(); return;
+      case 0x50: this.swapBuffers(); return;
+      default: return;     // unhandled — silently consume
+    }
+  }
+
+  // ---- Matrix helpers ----
+
+  private currentMatrix(): Float64Array {
+    switch (this.matMode) {
+      case MTX_MODE_PROJ: return this.matProj;
+      case MTX_MODE_POS:  return this.matPos;
+      case MTX_MODE_POSVEC: return this.matPos;  // pos+vec writes both — we use pos for transform
+      case MTX_MODE_TEX:  return this.matTex;
+    }
+    return this.matPos;
+  }
+
+  private matrixPush(): void {
+    if (this.matMode === MTX_MODE_PROJ) this.projStack.push(new Float64Array(this.matProj));
+    else if (this.matMode === MTX_MODE_TEX) {/* texture stack — single slot */}
+    else this.posStack.push(new Float64Array(this.matPos));
+  }
+
+  private matrixPop(n: number): void {
+    // n is 6-bit signed (5-bit magnitude + sign). Treat as count.
+    const count = n & 0x1F;
+    const negative = (n & 0x20) !== 0;
+    const steps = negative ? -count : count;
+    if (this.matMode === MTX_MODE_PROJ) {
+      for (let i = 0; i < Math.abs(steps); i++) {
+        const v = this.projStack.pop();
+        if (v) this.matProj = v;
+      }
+    } else if (this.matMode !== MTX_MODE_TEX) {
+      for (let i = 0; i < Math.abs(steps); i++) {
+        const v = this.posStack.pop();
+        if (v) this.matPos = v;
+      }
+    }
+  }
+
+  private matrixLoad(m: Float64Array): void {
+    if (this.matMode === MTX_MODE_PROJ) this.matProj.set(m);
+    else if (this.matMode === MTX_MODE_TEX) this.matTex.set(m);
+    else this.matPos.set(m);
+  }
+
+  private matrixMult(m: Float64Array): void {
+    const cur = this.currentMatrix();
+    mat4Mul(cur, cur, m);
+  }
+
+  private unpack4x4(p: number[]): Float64Array {
+    const m = new Float64Array(16);
+    for (let i = 0; i < 16; i++) m[i] = (p[i] | 0) / 4096;
+    return m;
+  }
+  private unpack4x3(p: number[]): Float64Array {
+    const m = mat4Identity();
+    // 12 fixed-point words: 4 rows of 3 columns + implicit (0,0,0,1)
+    for (let r = 0; r < 4; r++) {
+      for (let c = 0; c < 3; c++) {
+        m[r * 4 + c] = ((p[r * 3 + c] | 0) / 4096);
+      }
+    }
+    m[3] = 0; m[7] = 0; m[11] = 0; m[15] = 1;
+    // Reorder: actual GBATEK layout: 4 rows × 3 cols of m, with col 4 = 0/0/0/1.
+    // Transpose to column-major.
+    const out = mat4Identity();
+    for (let c = 0; c < 3; c++)
+      for (let r = 0; r < 4; r++) out[c * 4 + r] = m[r * 4 + c];
+    out[12] = m[0 * 4 + 3]; out[13] = m[1 * 4 + 3]; out[14] = m[2 * 4 + 3];
+    return out;
+  }
+  private unpack3x3(p: number[]): Float64Array {
+    const m = mat4Identity();
+    for (let c = 0; c < 3; c++)
+      for (let r = 0; r < 3; r++) m[c * 4 + r] = ((p[c * 3 + r] | 0) / 4096);
+    return m;
+  }
+  private makeScale(sx: number, sy: number, sz: number): Float64Array {
+    const m = mat4Identity();
+    m[0]  = sx / 4096;
+    m[5]  = sy / 4096;
+    m[10] = sz / 4096;
+    return m;
+  }
+  private makeTranslate(tx: number, ty: number, tz: number): Float64Array {
+    const m = mat4Identity();
+    m[12] = tx / 4096;
+    m[13] = ty / 4096;
+    m[14] = tz / 4096;
+    return m;
+  }
+
+  private unpackColor(c: number): number {
+    return c & 0x7FFF;
+  }
+
+  // ---- Vertex assembly ----
+
+  private beginVertices(prim: number): void {
+    this.primType = prim;       // 0=tri list, 1=quad list, 2=tri strip, 3=quad strip
+    this.vertexBuf = [];
+  }
+
+  private endVertices(): void {
+    this.primType = -1;
+  }
+
+  private vertex16(p0: number, p1: number): void {
+    // p0 low half = X, p0 high half = Y; p1 low half = Z (signed 16, 4.12).
+    const x = signExtend(p0, 16);
+    const y = signExtend(p0 >>> 16, 16);
+    const z = signExtend(p1, 16);
+    this.vertexAt(x / 4096, y / 4096, z / 4096);
+  }
+
+  private vertex10(p0: number): void {
+    // 3 × 10-bit signed (6.4 format)
+    const x = signExtend(p0 & 0x3FF, 10);
+    const y = signExtend((p0 >>> 10) & 0x3FF, 10);
+    const z = signExtend((p0 >>> 20) & 0x3FF, 10);
+    this.vertexAt(x / 64, y / 64, z / 64);
+  }
+
+  private vertexPartial(p0: number, mode: 'XY' | 'XZ' | 'YZ'): void {
+    const a = signExtend(p0, 16) / 4096;
+    const b = signExtend(p0 >>> 16, 16) / 4096;
+    if (mode === 'XY')      this.vertexAt(a, b, this.lastVtxZ);
+    else if (mode === 'XZ') this.vertexAt(a, this.lastVtxY, b);
+    else                    this.vertexAt(this.lastVtxX, a, b);
+  }
+
+  private vertexDiff(p0: number): void {
+    // 3 × 10-bit signed deltas in 6.4
+    const dx = signExtend(p0 & 0x3FF, 10) / 64;
+    const dy = signExtend((p0 >>> 10) & 0x3FF, 10) / 64;
+    const dz = signExtend((p0 >>> 20) & 0x3FF, 10) / 64;
+    this.vertexAt(this.lastVtxX + dx, this.lastVtxY + dy, this.lastVtxZ + dz);
+  }
+
+  private vertexAt(x: number, y: number, z: number): void {
+    this.lastVtxX = x; this.lastVtxY = y; this.lastVtxZ = z;
+    // Apply position then projection matrices.
+    const posView = mat4Apply(this.matPos, x, y, z, 1);
+    const clip    = mat4Apply(this.matProj, posView.x, posView.y, posView.z, posView.w);
+    this.vertexBuf.push({ x: clip.x, y: clip.y, z: clip.z, w: clip.w, color: this.currentColor });
+    this.emitIfReady();
+  }
+
+  private emitIfReady(): void {
+    const n = this.vertexBuf.length;
+    if (this.primType === 0 && n >= 3) {                  // triangle list
+      this.drawTriangle(this.vertexBuf[n-3], this.vertexBuf[n-2], this.vertexBuf[n-1]);
+      this.vertexBuf.length = 0;
+    } else if (this.primType === 1 && n >= 4) {           // quad list
+      this.drawTriangle(this.vertexBuf[n-4], this.vertexBuf[n-3], this.vertexBuf[n-2]);
+      this.drawTriangle(this.vertexBuf[n-4], this.vertexBuf[n-2], this.vertexBuf[n-1]);
+      this.vertexBuf.length = 0;
+    } else if (this.primType === 2 && n >= 3) {           // triangle strip
+      const v0 = this.vertexBuf[n-3], v1 = this.vertexBuf[n-2], v2 = this.vertexBuf[n-1];
+      if ((n & 1) === 1) this.drawTriangle(v0, v1, v2);
+      else               this.drawTriangle(v1, v0, v2);
+    } else if (this.primType === 3 && n >= 4 && (n & 1) === 0) {   // quad strip
+      const a = this.vertexBuf[n-4], b = this.vertexBuf[n-3], c = this.vertexBuf[n-2], d = this.vertexBuf[n-1];
+      this.drawTriangle(a, b, d);
+      this.drawTriangle(b, c, d);
+    }
+  }
+
+  // ---- Rasterizer ----
+
+  private drawTriangle(va: Vertex, vb: Vertex, vc: Vertex): void {
+    // Perspective divide → NDC.
+    const sa = this.toScreen(va);
+    const sb = this.toScreen(vb);
+    const sc = this.toScreen(vc);
+    if (!sa || !sb || !sc) return;
+    // Sort vertices by y ascending so we can do a simple span fill.
+    let [v0, v1, v2] = [sa, sb, sc].sort((x, y) => x.y - y.y);
+    const yTop = Math.max(0, Math.ceil(v0.y));
+    const yBot = Math.min(GX_SCREEN_H - 1, Math.floor(v2.y));
+    if (yTop > yBot) return;
+    for (let y = yTop; y <= yBot; y++) {
+      const upper = y < v1.y;
+      // edge0: v0 → v2 (long edge)
+      const t02 = (y - v0.y) / Math.max(1e-9, v2.y - v0.y);
+      const xL02 = v0.x + (v2.x - v0.x) * t02;
+      // edge1: shorter edge
+      let xL01: number;
+      if (upper) {
+        const t01 = (y - v0.y) / Math.max(1e-9, v1.y - v0.y);
+        xL01 = v0.x + (v1.x - v0.x) * t01;
+      } else {
+        const t12 = (y - v1.y) / Math.max(1e-9, v2.y - v1.y);
+        xL01 = v1.x + (v2.x - v1.x) * t12;
+      }
+      const xLeft  = Math.max(0,  Math.ceil(Math.min(xL02, xL01)));
+      const xRight = Math.min(GX_SCREEN_W - 1, Math.floor(Math.max(xL02, xL01)));
+      if (xLeft > xRight) continue;
+      const fbRow = y * GX_SCREEN_W;
+      // Flat fill with v0's color for now.
+      const color = (va.color & 0x7FFF) | 0x8000;       // bit 15 = drawn
+      for (let x = xLeft; x <= xRight; x++) this.fbBack[fbRow + x] = color;
+    }
+  }
+
+  private toScreen(v: Vertex): { x: number; y: number } | null {
+    if (v.w === 0) return null;
+    const ndcX = v.x / v.w;
+    const ndcY = v.y / v.w;
+    // Standard NDS viewport: full screen 0..GX_SCREEN_W-1, 0..GX_SCREEN_H-1.
+    return {
+      x: (ndcX + 1) * 0.5 * GX_SCREEN_W,
+      y: (1 - ndcY) * 0.5 * GX_SCREEN_H,
+    };
+  }
+
+  // ---- SWAP_BUFFERS ----
+
+  private swapBuffers(): void {
+    // Promote back → front, clear back.
+    this.fbFront.set(this.fbBack);
+    this.fbBack.fill(0);
+  }
+}
+
+function signExtend(v: number, bits: number): number {
+  const m = 1 << (bits - 1);
+  return (v & (m - 1)) - (v & m);
+}

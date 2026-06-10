@@ -10,6 +10,7 @@ import { Irq, IRQ_VBLANK, IRQ_HBLANK, IRQ_VCOUNT } from '../io/irq';
 import { renderEngineA, renderEngineB } from './engine_a';
 import type { Dma } from '../io/dma';
 import type { Ipc } from '../io/ipc';
+import { Gx } from './gx';
 
 export const DOTS_PER_LINE  = 355;
 export const LINES_PER_FRAME = 263;
@@ -25,6 +26,7 @@ export class Ppu {
   dma9: Dma | null = null;
   dma7: Dma | null = null;
   ipc: Ipc | null = null;
+  gx: Gx;
 
   // DISPCNT for engines A and B (32-bit each).
   dispcntA = 0;
@@ -72,6 +74,7 @@ export class Ppu {
     this.mem = mem;
     this.irq9 = irq9;
     this.irq7 = irq7;
+    this.gx = new Gx(mem, irq9);
   }
 
   // Advance PPU by N ARM9 cycles. We share the same dot clock for
