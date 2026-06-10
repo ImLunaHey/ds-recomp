@@ -16,15 +16,34 @@ import { Ppu, SCREEN_W, SCREEN_H } from './ppu';
 import { renderTextScanline } from './text_bg';
 import { renderBitmapScanline } from './bitmap_bg';
 import { renderObjScanline, newObjLine, clearObjLine } from './sprites';
+import { getActiveVramRouter } from '../memory/vram_router';
 
 const ENGINE_A_PRAM = 0;
 const ENGINE_B_PRAM = 0x400;
-const ENGINE_A_BG_VRAM_BASE = 0;
-const ENGINE_B_BG_VRAM_BASE = 0x80000;       // bank C typical mapping
-const ENGINE_A_OBJ_VRAM_BASE = 0x20000;      // bank B typical mapping
-const ENGINE_B_OBJ_VRAM_BASE = 0x90000;      // bank D typical mapping
+// Fallback bases used when the router can't resolve the current BG/OBJ
+// window for an engine. Real games configure VRAMCNT before enabling
+// the relevant DISPCNT bits, so the fallback is unreachable for any
+// game with a correct setup. Kept here for reset-time renders and
+// any test that touches the renderer without configuring VRAMCNT.
+const FALLBACK_ENGINE_A_BG = 0;          // bank A typical
+const FALLBACK_ENGINE_B_BG = 0x40000;    // bank C typical
+const FALLBACK_ENGINE_A_OBJ = 0x20000;   // bank B typical
+const FALLBACK_ENGINE_B_OBJ = 0x60000;   // bank D typical (was 0x90000 = bank F, wrong)
 const ENGINE_A_OAM_BASE = 0;
 const ENGINE_B_OAM_BASE = 0x400;
+
+// Resolve the current VRAM slot offset for an engine's BG / OBJ window
+// by asking the router which bank is mapped there. Returns the flat
+// offset into shared.vram (NOT the bank index). The window address
+// passed in is one of:
+//   0x06000000 (engine A BG), 0x06400000 (engine A OBJ),
+//   0x06200000 (engine B BG), 0x06600000 (engine B OBJ).
+function resolveVramBase(addr: number, fallback: number): number {
+  const router = getActiveVramRouter();
+  if (!router) return fallback;
+  const idx = router.resolveArm9(addr);
+  return idx >= 0 ? idx : fallback;
+}
 
 // Layer indices used as bit positions into WININ / WINOUT / BLDCNT
 // target masks. BG0..3 use their own index; OBJ is bit 4; backdrop is
@@ -86,8 +105,12 @@ function renderEngine(ppu: Ppu, dispcnt: number, fb: Uint8ClampedArray, isEngine
 
   // Graphics display (mode 1) — composite BGs + OBJ per scanline.
   const pramBase  = isEngineA ? ENGINE_A_PRAM     : ENGINE_B_PRAM;
-  const bgVramBase = isEngineA ? ENGINE_A_BG_VRAM_BASE  : ENGINE_B_BG_VRAM_BASE;
-  const objVramBase = isEngineA ? ENGINE_A_OBJ_VRAM_BASE : ENGINE_B_OBJ_VRAM_BASE;
+  const bgVramBase  = isEngineA
+    ? resolveVramBase(0x06000000, FALLBACK_ENGINE_A_BG)
+    : resolveVramBase(0x06200000, FALLBACK_ENGINE_B_BG);
+  const objVramBase = isEngineA
+    ? resolveVramBase(0x06400000, FALLBACK_ENGINE_A_OBJ)
+    : resolveVramBase(0x06600000, FALLBACK_ENGINE_B_OBJ);
   const oamBase   = isEngineA ? ENGINE_A_OAM_BASE : ENGINE_B_OAM_BASE;
   const objPramBase = pramBase + 0x200;
 

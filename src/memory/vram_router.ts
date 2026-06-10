@@ -116,19 +116,36 @@ export class VramRouter {
       }
       return -1;
     }
-    // Sub-BG window 0x06200000..0x0621FFFF (engine B BG).
-    if (addr >= 0x06200000 && addr < 0x06220000) {
-      // Bank C MST=4 OFS=0 (engine B BG) - 128 KB.
+    // Sub-BG window 0x06200000..0x0627FFFF (engine B BG, 512 KB).
+    // Banks that can map here: C MST=4 (128 KB), D MST=4 (128 KB),
+    // H MST=1 (32 KB at start), I MST=1 (16 KB at 0x06208000).
+    if (addr >= 0x06200000 && addr < 0x06280000) {
       if ((this.vramcnt[2] & 0x87) === 0x84 && addr < 0x06220000) {
         return BANK_INFO[2].start + (addr - 0x06200000);
       }
-      // Bank H MST=1 (engine B BG) - 32 KB at start.
+      if ((this.vramcnt[3] & 0x87) === 0x84 && addr < 0x06220000) {
+        return BANK_INFO[3].start + (addr - 0x06200000);
+      }
       if ((this.vramcnt[7] & 0x87) === 0x81 && addr < 0x06208000) {
         return BANK_INFO[7].start + (addr - 0x06200000);
       }
-      // Bank I MST=1 (engine B BG slot 2) at 0x06208000.
       if ((this.vramcnt[8] & 0x87) === 0x81 && addr >= 0x06208000 && addr < 0x0620C000) {
         return BANK_INFO[8].start + (addr - 0x06208000);
+      }
+      return -1;
+    }
+    // Sub-OBJ window 0x06600000..0x0667FFFF (engine B OBJ, 512 KB).
+    // Banks that can map here: D MST=5 (128 KB), I MST=2 (16 KB).
+    // Brain Training has VRAMCNT_D=0x84 (sub-BG) and VRAMCNT_I=0x83
+    // (sub-OBJ ext pal), so its writes to 0x06600000 hit no bank
+    // here — same as real DS. This handler is correct for games
+    // that DO set MST=5 on bank D for sub-OBJ.
+    if (addr >= 0x06600000 && addr < 0x06680000) {
+      if ((this.vramcnt[3] & 0x87) === 0x85 && addr < 0x06620000) {
+        return BANK_INFO[3].start + (addr - 0x06600000);
+      }
+      if ((this.vramcnt[8] & 0x87) === 0x82 && addr < 0x06604000) {
+        return BANK_INFO[8].start + (addr - 0x06600000);
       }
       return -1;
     }
