@@ -143,6 +143,48 @@ function injectTestPattern(emu: Emulator): void {
   emu.ppu.bgVofsA[0] = 0;
 }
 
+// Inject GX commands for a few colored triangles, then enable engine A
+// BG0 as the 3D layer. Lets the user verify the 3D pipeline is wired
+// end to end without needing a retail game to reach its GX calls.
+function injectGxDemo(emu: Emulator): void {
+  const cmd = (op: number, ...params: number[]): void => {
+    emu.bus9.write32(0x04000400, op);
+    for (const p of params) emu.bus9.write32(0x04000400, p);
+  };
+  const packXY = (x: number, y: number): number => {
+    const lo = (Math.round(x * 4096) & 0xFFFF);
+    const hi = (Math.round(y * 4096) & 0xFFFF) << 16;
+    return (lo | hi) >>> 0;
+  };
+  // Identity matrices.
+  cmd(0x10, 0); cmd(0x15);
+  cmd(0x10, 1); cmd(0x15);
+  // Tri list.
+  cmd(0x40, 0);
+  // Triangle 1 — red, lower-left.
+  cmd(0x20, 0x001F);
+  cmd(0x23, packXY(-0.8, -0.6), 0);
+  cmd(0x23, packXY(-0.2, -0.6), 0);
+  cmd(0x23, packXY(-0.5,  0.0), 0);
+  // Triangle 2 — green, lower-right.
+  cmd(0x20, 0x03E0);
+  cmd(0x23, packXY( 0.2, -0.6), 0);
+  cmd(0x23, packXY( 0.8, -0.6), 0);
+  cmd(0x23, packXY( 0.5,  0.0), 0);
+  // Triangle 3 — blue, top.
+  cmd(0x20, 0x7C00);
+  cmd(0x23, packXY(-0.3,  0.2), 0);
+  cmd(0x23, packXY( 0.3,  0.2), 0);
+  cmd(0x23, packXY( 0.0,  0.7), 0);
+  cmd(0x41);
+  cmd(0x50, 0);
+  // Engine A: graphics display mode 1, BG0 enabled, 3D bit (3) on.
+  emu.ppu.dispcntA = (1 << 16) | (1 << 8) | (1 << 3);
+  emu.ppu.bgCntA[0] = 0;            // priority 0
+  // Black backdrop so the colors pop.
+  emu.mem.pram[0] = 0; emu.mem.pram[1] = 0;
+}
+
 export function App() {
   const emuRef = useRef<Emulator | null>(null);
   if (!emuRef.current) emuRef.current = new Emulator();
@@ -387,6 +429,21 @@ export function App() {
             }}
           >
             🎮 Render Banner
+          </button>
+          <button
+            className="px-4 py-2 rounded bg-emerald-700 hover:bg-emerald-600 text-white text-sm border border-emerald-500"
+            title="Inject GX commands for a rotating triangle through the 3D engine"
+            onClick={() => {
+              injectGxDemo(emu);
+              setTick((t) => t + 1);
+              if (!running) {
+                emu.ppu.frameDone = false;
+                emu.ppu.step(355 * 263);
+                paintCanvas(topCanvasRef.current, emu.ppu.fbA);
+              }
+            }}
+          >
+            🔺 3D Demo
           </button>
         </div>
       </header>
