@@ -34,6 +34,15 @@ export class Spi {
   private fwCmd = 0;
   private fwAddr = 0;
   private tscChannel = 0;
+  // Real DS SPI hardware: when SPICNT bit 11 (CS-hold) transitions
+  // 1 → 0 mid-transaction, the chip select stays asserted until *after*
+  // the next byte completes. The Nintendo SDK SPI driver relies on
+  // this: it lowers CS-hold, then writes one more SPIDATA byte to
+  // read the status/data byte as the last byte of the transaction.
+  // Without the deferral, that final byte starts a NEW transaction
+  // (with cmd = 0), gets back 0xFF, and the driver (e.g. NSMB's RDSR
+  // status poll at ARM7 0x27F58E4) sees WEL=1 forever and spins.
+  private releaseAfterNext = false;
 
   // 256 KB firmware blob. Populated with sane defaults so the most
   // commonly read fields (user settings, touchscreen calibration,
@@ -143,13 +152,17 @@ export class Spi {
     const oldHold = (this.cnt >> 11) & 1;
     const newHold = (v >> 11) & 1;
     const newDev  = (v >> 8) & 0x3;
-    // If CS was asserted and is now released, OR the selected device
-    // changed mid-transaction, the current transaction ends.
-    if ((oldHold && !newHold) || (this.bytePos > 0 && newDev !== this.device)) {
+    // Device change mid-transaction always ends it immediately.
+    if (this.bytePos > 0 && newDev !== this.device) {
       this.endTransaction();
+      this.releaseAfterNext = false;
+    }
+    // CS-hold falling 1 → 0 mid-transaction: defer the end-of-
+    // transaction until after the NEXT byte completes (see field doc).
+    if (oldHold && !newHold && this.bytePos > 0) {
+      this.releaseAfterNext = true;
     }
     this.device = newDev;
-    // Mask off busy bit on writes — we never report busy.
     this.cnt = v & 0xFFFF & ~0x80;
   }
 
@@ -169,9 +182,13 @@ export class Spi {
     this.data = response;
     this.bytePos++;
 
-    // If CS is NOT being held, this is a single-byte transaction —
-    // end immediately so the next write starts a new one.
-    if (!((this.cnt >> 11) & 1)) this.endTransaction();
+    // End transaction if CS-hold is currently 0 (single-byte transaction)
+    // OR if the previous writeCnt deferred a "release after next byte".
+    const hold = (this.cnt >> 11) & 1;
+    if (!hold || this.releaseAfterNext) {
+      this.endTransaction();
+      this.releaseAfterNext = false;
+    }
   }
 
   // ---- Per-device state machines ----
