@@ -698,17 +698,35 @@ export function App() {
             onPointerDown={(e) => {
               (e.currentTarget as HTMLCanvasElement).setPointerCapture(e.pointerId);
               const rect = e.currentTarget.getBoundingClientRect();
-              emu.spi.touchX = Math.floor((e.clientX - rect.left) * SCREEN_W / rect.width);
-              emu.spi.touchY = Math.floor((e.clientY - rect.top) * SCREEN_H / rect.height);
+              const x = Math.max(0, Math.min(SCREEN_W - 1, Math.floor((e.clientX - rect.left) * SCREEN_W / rect.width)));
+              const y = Math.max(0, Math.min(SCREEN_H - 1, Math.floor((e.clientY - rect.top) * SCREEN_H / rect.height)));
+              emu.spi.touchX = x;
+              emu.spi.touchY = y;
             }}
             onPointerMove={(e) => {
-              if (emu.spi.touchX === null) return;
+              // Drag-update only fires while a pointer button is held.
+              // e.buttons bit 0 = primary (left mouse / first touch contact /
+              // pen tip). Hover-without-press would otherwise also fire
+              // pointermove and warp the touch coords.
+              if ((e.buttons & 1) === 0) return;
               const rect = e.currentTarget.getBoundingClientRect();
-              emu.spi.touchX = Math.floor((e.clientX - rect.left) * SCREEN_W / rect.width);
-              emu.spi.touchY = Math.floor((e.clientY - rect.top) * SCREEN_H / rect.height);
+              const x = Math.max(0, Math.min(SCREEN_W - 1, Math.floor((e.clientX - rect.left) * SCREEN_W / rect.width)));
+              const y = Math.max(0, Math.min(SCREEN_H - 1, Math.floor((e.clientY - rect.top) * SCREEN_H / rect.height)));
+              emu.spi.touchX = x;
+              emu.spi.touchY = y;
             }}
             onPointerUp={() => { emu.spi.touchX = null; emu.spi.touchY = null; }}
             onPointerCancel={() => { emu.spi.touchX = null; emu.spi.touchY = null; }}
+            onPointerLeave={(e) => {
+              // If we lose capture (e.g. browser revokes it under specific
+              // gesture conflicts), release. setPointerCapture normally
+              // keeps the canvas the target through drag-off, but defend
+              // against the edge case to avoid a "touched forever" stuck
+              // state.
+              if (!e.currentTarget.hasPointerCapture(e.pointerId)) {
+                emu.spi.touchX = null; emu.spi.touchY = null;
+              }
+            }}
           />
           {/* Virtual control pad — mirrors the keyboard mappings. Each
               button uses Pointer events with setPointerCapture so drags
