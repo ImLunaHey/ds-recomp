@@ -36,37 +36,49 @@ describe('IPC PXI stub server', () => {
     expect(fresh.q7to9.size).toBe(0);
   });
 
-  it('tag 0x05 (WM init) queues a "command complete" reply with low bit set', () => {
+  it('Meteos WM init exact match (0x0501504D) → 0x0501504E reply', () => {
     // Meteos: ARM9 sends 0x0501504D; ARM7 should ack with low bit set.
     ipc.writeSend(true, 0x0501504D);
     expect(ipc.q7to9.size).toBe(1);
-    expect(ipc.readRecv(true) >>> 0).toBe(0x0501504D | 0x01);
+    expect(ipc.readRecv(true) >>> 0).toBe(0x0501504E);
   });
 
-  it('tag 0xC0 (SND) queues a reply whose bit 21 is NOT set after normalize', () => {
-    // Pokemon Platinum SND command. The stub echoes the command, the
-    // outgoing-normalize path strips bit 21, so ARM9 sees a "done" word.
-    ipc.writeSend(true, 0xC0280004);
+  it('Pokemon SND-shape (0xC0080004) queues reply, normalize keeps it clean', () => {
+    // Pokemon's SND command word. The stub echoes; normalizePxiReply on
+    // the reply path strips bit 21 (already 0 here) — ARM9 reads back
+    // the same value indicating "command processed".
+    ipc.writeSend(true, 0xC0080004);
     expect(ipc.q7to9.size).toBe(1);
-    const reply = ipc.readRecv(true) >>> 0;
-    expect(reply & 0x00200000).toBe(0);
-    expect(reply).toBe(0xC0080004);
+    expect(ipc.readRecv(true) >>> 0).toBe(0xC0080004);
   });
 
-  it('tag 0x80 (MIC) queues a reply whose bit 5 is NOT set after normalize', () => {
-    ipc.writeSend(true, 0x80088024);
+  it('Pokemon MIC-shape (0x80088084) queues reply, bit 5 NOT set after normalize', () => {
+    // Pokemon's MIC command shape. The bit 5 strip applies on the
+    // outgoing reply path (low byte of 0x84 = bit 7 only, so reading
+    // back the echo is itself bit-5-clear).
+    ipc.writeSend(true, 0x80088084);
     expect(ipc.q7to9.size).toBe(1);
     const reply = ipc.readRecv(true) >>> 0;
     expect(reply & 0x00000020).toBe(0);
-    expect(reply).toBe(0x80088004);
+    expect(reply).toBe(0x80088084);
   });
 
-  it('tag 0x40 (WM) queues a reply whose bit 5 is NOT set after normalize', () => {
-    ipc.writeSend(true, 0x40A00024);
+  it('Pokemon WM-shape (0x40A00004) queues reply, bit 5 NOT set after normalize', () => {
+    ipc.writeSend(true, 0x40A00004);
     expect(ipc.q7to9.size).toBe(1);
     const reply = ipc.readRecv(true) >>> 0;
     expect(reply & 0x00000020).toBe(0);
     expect(reply).toBe(0x40A00004);
+  });
+
+  it('arbitrary 0xC0/0x80/0x40-prefixed values are NOT auto-acked', () => {
+    // Narrow matching: only specific known retail patterns fire the stub.
+    // Homebrew / unknown commands stay quiet so their own IPC protocol
+    // isn't disturbed (RockWrestler MEMORY test depended on this).
+    ipc.writeSend(true, 0xC0280004);   // bit-21 variant — not in our table
+    ipc.writeSend(true, 0x80088024);   // bit-5 variant — not in our table
+    ipc.writeSend(true, 0x40A00024);
+    expect(ipc.q7to9.size).toBe(0);
   });
 
   it('SYSTEM-tag 0x000400xx (Nintendogs ack) queues a bit-5-set reply', () => {

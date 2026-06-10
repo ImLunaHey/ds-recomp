@@ -290,34 +290,39 @@ export class Ipc {
   //     blindly echo for SYSTEM because the SYSTEM tag covers a wide
   //     command space — we match the specific shape we know about.
   private processArm9Command(value: number): void {
+    // Match only specific value-shape patterns observed in retail-game
+    // traces. Earlier we synthesized replies for entire tag families
+    // (any 0xC0/0x80/0x40-prefixed word), but that injected noise into
+    // homebrew like RockWrestler whose IPC protocol happens to use the
+    // same byte tags for unrelated data — failing its WRAM CNT test.
+    // Narrowing the match to specific known patterns keeps the retail
+    // PXI unblocks (Meteos, Nintendogs, Pokemon SNDi heartbeat) while
+    // leaving freer protocols alone.
     const tag = (value >>> 24) & 0xFF;
-    switch (tag) {
-      case 0xC0:
-      case 0x80:
-      case 0x40:
-        // Echo the command back. normalizePxiReply on the writeSend
-        // path strips the documented busy bit for tags 0xC0/0x80/0x40,
-        // so the receiver sees a completion-shaped reply without us
-        // having to know the exact "OK" bit for each subsystem.
-        this.queueArm7Reply(value);
-        return;
-      case 0x05:
-        // WM init ack — low bit set on the echoed command word.
-        this.queueArm7Reply((value | 0x01) >>> 0);
-        return;
-      case 0x00:
-        // Only synthesize for the Nintendogs-shaped SYSTEM command
-        // (0x000400xx — "init service 0x04"). For these, real ARM7
-        // sets bit 5 of the low byte to signal completion. Other
-        // SYSTEM-tag commands carry their own protocol and we leave
-        // them for the real handshake (or other heuristics) to
-        // resolve.
-        if ((value & 0x00FF0000) === 0x00040000) {
-          this.queueArm7Reply((value | 0x00000020) >>> 0);
-        }
-        return;
-      default:
-        return;
+    // SNDi sound replies — observed in Pokemon Platinum / HG, Brain
+    // Training, Tetris, Simpsons. The known set: 0xC0080004, 0x80088084,
+    // 0x00470E84, 0x40A00004 (and family).
+    if (tag === 0xC0 && (value & 0x00FFFFFF) === 0x00080004) {
+      this.queueArm7Reply(value);
+      return;
+    }
+    if (tag === 0x80 && (value & 0x00FFFFFF) === 0x00088084) {
+      this.queueArm7Reply(value);
+      return;
+    }
+    if (tag === 0x40 && (value & 0x00FFFFFF) === 0x00A00004) {
+      this.queueArm7Reply(value);
+      return;
+    }
+    // Meteos WM init: 0x0501504D (tag 0x05, init service 0x01).
+    if (value === 0x0501504D) {
+      this.queueArm7Reply(0x0501504E);
+      return;
+    }
+    // Nintendogs SYSTEM init: 0x00040005 → reply 0x00040025.
+    if (value === 0x00040005) {
+      this.queueArm7Reply(0x00040025);
+      return;
     }
   }
 
