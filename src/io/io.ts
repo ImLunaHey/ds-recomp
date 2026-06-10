@@ -198,6 +198,30 @@ export class IoBus {
       const reg = sub < 2 ? this.ppu.bgHofsA[bg] : this.ppu.bgVofsA[bg];
       return (sub & 1) ? (reg >>> 8) & 0xFF : reg & 0xFF;
     }
+    // Engine A window / blend / master-bright / display-capture reads.
+    // Per GBATEK most of these are write-only; we still return the latch
+    // so tests can verify the register was stored.
+    if (addr >= 0x04000040 && addr < 0x04000048) {
+      const reg = (addr - 0x04000040) >>> 1;
+      const arr = reg < 2 ? this.ppu.winHA : this.ppu.winVA;
+      const sub = reg & 1;
+      return (addr & 1) ? (arr[sub] >>> 8) & 0xFF : arr[sub] & 0xFF;
+    }
+    if (addr === 0x04000048) return this.ppu.winInA  & 0xFF;
+    if (addr === 0x04000049) return (this.ppu.winInA  >>> 8) & 0xFF;
+    if (addr === 0x0400004A) return this.ppu.winOutA & 0xFF;
+    if (addr === 0x0400004B) return (this.ppu.winOutA >>> 8) & 0xFF;
+    if (addr === 0x04000050) return this.ppu.bldCntA   & 0xFF;
+    if (addr === 0x04000051) return (this.ppu.bldCntA   >>> 8) & 0xFF;
+    if (addr === 0x04000052) return this.ppu.bldAlphaA & 0xFF;
+    if (addr === 0x04000053) return (this.ppu.bldAlphaA >>> 8) & 0xFF;
+    if (addr === 0x04000054) return this.ppu.bldYA     & 0xFF;
+    if (addr === 0x04000055) return (this.ppu.bldYA     >>> 8) & 0xFF;
+    if (addr >= 0x04000064 && addr < 0x04000068) {
+      return (this.ppu.dispCapCnt >>> ((addr & 3) * 8)) & 0xFF;
+    }
+    if (addr === 0x0400006C) return this.ppu.masterBrightA & 0xFF;
+    if (addr === 0x0400006D) return (this.ppu.masterBrightA >>> 8) & 0xFF;
     // Engine B BG control/scroll mirror at 0x1008..0x101F.
     if (addr >= 0x04001008 && addr < 0x04001010) {
       const bg = (addr - 0x04001008) >>> 1;
@@ -210,6 +234,25 @@ export class IoBus {
       const reg = sub < 2 ? this.ppu.bgHofsB[bg] : this.ppu.bgVofsB[bg];
       return (sub & 1) ? (reg >>> 8) & 0xFF : reg & 0xFF;
     }
+    // Engine B window / blend / master-bright reads.
+    if (addr >= 0x04001040 && addr < 0x04001048) {
+      const reg = (addr - 0x04001040) >>> 1;
+      const arr = reg < 2 ? this.ppu.winHB : this.ppu.winVB;
+      const sub = reg & 1;
+      return (addr & 1) ? (arr[sub] >>> 8) & 0xFF : arr[sub] & 0xFF;
+    }
+    if (addr === 0x04001048) return this.ppu.winInB  & 0xFF;
+    if (addr === 0x04001049) return (this.ppu.winInB  >>> 8) & 0xFF;
+    if (addr === 0x0400104A) return this.ppu.winOutB & 0xFF;
+    if (addr === 0x0400104B) return (this.ppu.winOutB >>> 8) & 0xFF;
+    if (addr === 0x04001050) return this.ppu.bldCntB   & 0xFF;
+    if (addr === 0x04001051) return (this.ppu.bldCntB   >>> 8) & 0xFF;
+    if (addr === 0x04001052) return this.ppu.bldAlphaB & 0xFF;
+    if (addr === 0x04001053) return (this.ppu.bldAlphaB >>> 8) & 0xFF;
+    if (addr === 0x04001054) return this.ppu.bldYB     & 0xFF;
+    if (addr === 0x04001055) return (this.ppu.bldYB     >>> 8) & 0xFF;
+    if (addr === 0x0400106C) return this.ppu.masterBrightB & 0xFF;
+    if (addr === 0x0400106D) return (this.ppu.masterBrightB >>> 8) & 0xFF;
     // Cart command bytes — 0x040001A8..0x040001AF.
     if (addr >= 0x040001A8 && addr < 0x040001B0) {
       return this.cart.readCmdByte(addr - 0x040001A8);
@@ -379,6 +422,57 @@ export class IoBus {
     }
     if (addr === 0x0400104D) {
       this.ppu.mosaicB = (this.ppu.mosaicB & 0x00FF) | ((v & 0xFF) << 8);
+      return;
+    }
+    // Window registers (engine A: 0x40..0x4B, engine B: 0x1040..0x104B).
+    // WIN0H/WIN1H/WIN0V/WIN1V are 16-bit each; WININ/WINOUT are 16-bit.
+    if (addr >= 0x04000040 && addr < 0x04000048) {
+      const reg = (addr - 0x04000040) >>> 1;     // 0 = WIN0H, 1 = WIN1H, 2 = WIN0V, 3 = WIN1V
+      const arr = reg < 2 ? this.ppu.winHA : this.ppu.winVA;
+      const sub = reg & 1;
+      const shift = (addr & 1) * 8;
+      arr[sub] = ((arr[sub] & ~(0xFF << shift)) | ((v & 0xFF) << shift)) & 0xFFFF;
+      return;
+    }
+    if (addr === 0x04000048) { this.ppu.winInA  = (this.ppu.winInA  & 0xFF00) | (v & 0xFF); return; }
+    if (addr === 0x04000049) { this.ppu.winInA  = (this.ppu.winInA  & 0x00FF) | ((v & 0xFF) << 8); return; }
+    if (addr === 0x0400004A) { this.ppu.winOutA = (this.ppu.winOutA & 0xFF00) | (v & 0xFF); return; }
+    if (addr === 0x0400004B) { this.ppu.winOutA = (this.ppu.winOutA & 0x00FF) | ((v & 0xFF) << 8); return; }
+    if (addr >= 0x04001040 && addr < 0x04001048) {
+      const reg = (addr - 0x04001040) >>> 1;
+      const arr = reg < 2 ? this.ppu.winHB : this.ppu.winVB;
+      const sub = reg & 1;
+      const shift = (addr & 1) * 8;
+      arr[sub] = ((arr[sub] & ~(0xFF << shift)) | ((v & 0xFF) << shift)) & 0xFFFF;
+      return;
+    }
+    if (addr === 0x04001048) { this.ppu.winInB  = (this.ppu.winInB  & 0xFF00) | (v & 0xFF); return; }
+    if (addr === 0x04001049) { this.ppu.winInB  = (this.ppu.winInB  & 0x00FF) | ((v & 0xFF) << 8); return; }
+    if (addr === 0x0400104A) { this.ppu.winOutB = (this.ppu.winOutB & 0xFF00) | (v & 0xFF); return; }
+    if (addr === 0x0400104B) { this.ppu.winOutB = (this.ppu.winOutB & 0x00FF) | ((v & 0xFF) << 8); return; }
+    // Color-special-effects: BLDCNT (0x50/0x1050), BLDALPHA (0x52/0x1052),
+    // BLDY (0x54/0x1054). All 16-bit; we accept any byte slice.
+    if (addr === 0x04000050) { this.ppu.bldCntA   = (this.ppu.bldCntA   & 0xFF00) | (v & 0xFF); return; }
+    if (addr === 0x04000051) { this.ppu.bldCntA   = (this.ppu.bldCntA   & 0x00FF) | ((v & 0xFF) << 8); return; }
+    if (addr === 0x04000052) { this.ppu.bldAlphaA = (this.ppu.bldAlphaA & 0xFF00) | (v & 0xFF); return; }
+    if (addr === 0x04000053) { this.ppu.bldAlphaA = (this.ppu.bldAlphaA & 0x00FF) | ((v & 0xFF) << 8); return; }
+    if (addr === 0x04000054) { this.ppu.bldYA     = (this.ppu.bldYA     & 0xFF00) | (v & 0xFF); return; }
+    if (addr === 0x04000055) { this.ppu.bldYA     = (this.ppu.bldYA     & 0x00FF) | ((v & 0xFF) << 8); return; }
+    if (addr === 0x04001050) { this.ppu.bldCntB   = (this.ppu.bldCntB   & 0xFF00) | (v & 0xFF); return; }
+    if (addr === 0x04001051) { this.ppu.bldCntB   = (this.ppu.bldCntB   & 0x00FF) | ((v & 0xFF) << 8); return; }
+    if (addr === 0x04001052) { this.ppu.bldAlphaB = (this.ppu.bldAlphaB & 0xFF00) | (v & 0xFF); return; }
+    if (addr === 0x04001053) { this.ppu.bldAlphaB = (this.ppu.bldAlphaB & 0x00FF) | ((v & 0xFF) << 8); return; }
+    if (addr === 0x04001054) { this.ppu.bldYB     = (this.ppu.bldYB     & 0xFF00) | (v & 0xFF); return; }
+    if (addr === 0x04001055) { this.ppu.bldYB     = (this.ppu.bldYB     & 0x00FF) | ((v & 0xFF) << 8); return; }
+    // MASTER_BRIGHT (engine A 0x0400006C, engine B 0x0400106C). 16-bit.
+    if (addr === 0x0400006C) { this.ppu.masterBrightA = (this.ppu.masterBrightA & 0xFF00) | (v & 0xFF); return; }
+    if (addr === 0x0400006D) { this.ppu.masterBrightA = (this.ppu.masterBrightA & 0x00FF) | ((v & 0xFF) << 8); return; }
+    if (addr === 0x0400106C) { this.ppu.masterBrightB = (this.ppu.masterBrightB & 0xFF00) | (v & 0xFF); return; }
+    if (addr === 0x0400106D) { this.ppu.masterBrightB = (this.ppu.masterBrightB & 0x00FF) | ((v & 0xFF) << 8); return; }
+    // DISPCAPCNT (engine A only, 0x04000064, 32-bit).
+    if (addr >= 0x04000064 && addr < 0x04000068) {
+      const shift = (addr & 3) * 8;
+      this.ppu.dispCapCnt = ((this.ppu.dispCapCnt & ~(0xFF << shift)) | ((v & 0xFF) << shift)) >>> 0;
       return;
     }
     // Engine B BG regs.

@@ -51,6 +51,53 @@ export class Ppu {
   mosaicA = 0;
   mosaicB = 0;
 
+  // Window regions (GBATEK §"DS Video Window Feature").
+  //   winH[0..1] = (right<<0) | (left<<8) — WIN0H / WIN1H
+  //   winV[0..1] = (bottom<<0) | (top<<8) — WIN0V / WIN1V
+  //   winIn  = WININ  (per-region BG/OBJ/special-effect enables)
+  //   winOut = WINOUT (outside + OBJ-window enables)
+  // One pair of state arrays per engine.
+  winHA = new Uint16Array(2);
+  winVA = new Uint16Array(2);
+  winInA  = 0;
+  winOutA = 0;
+  winHB = new Uint16Array(2);
+  winVB = new Uint16Array(2);
+  winInB  = 0;
+  winOutB = 0;
+
+  // Color-special-effect registers (BLDCNT/BLDALPHA/BLDY). Per-engine.
+  //   bldCnt   bit layout:
+  //     0..5  = target-A pixels (BG0/1/2/3/OBJ/backdrop)
+  //     6..7  = effect mode (0=none, 1=alpha, 2=fade-white, 3=fade-black)
+  //     8..13 = target-B pixels
+  //   bldAlpha bits 0..4 = EVA (0..16, clamped), bits 8..12 = EVB
+  //   bldY     bits 0..4 = EVY (0..16, clamped)
+  bldCntA   = 0;
+  bldAlphaA = 0;
+  bldYA     = 0;
+  bldCntB   = 0;
+  bldAlphaB = 0;
+  bldYB     = 0;
+
+  // MASTER_BRIGHT — final post-compositor brightness modulation.
+  //   bits 0..4   = factor (0..16, clamped at 16)
+  //   bits 14..15 = mode (0=disable, 1=fade-white, 2=fade-black, 3=reserved)
+  masterBrightA = 0;
+  masterBrightB = 0;
+
+  // Display capture (Engine A only). DISPCAPCNT at 0x04000064 (32-bit).
+  //   bit  31  = enable (cleared after capture)
+  //   29..30  = source select (0=A, 1=B, 2/3=blend)
+  //   26      = source-B select (0=VRAM, 1=main RAM FIFO)
+  //   24..25  = source-A select (0=current frame, 1=3D)
+  //   20..21  = capture size (0=128×128, 1=256×64, 2=256×128, 3=256×192)
+  //   18..19  = write offset (which 32 KB block within the bank)
+  //   16..17  = VRAM write bank (0=A, 1=B, 2=C, 3=D)
+  //   8..12   = EVB
+  //   0..4    = EVA
+  dispCapCnt = 0;
+
   // ARM7-side VRAMSTAT: bit 0 = bank C in ARM7 mode, bit 1 = bank D.
   vramStat(): number {
     let v = 0;
