@@ -117,7 +117,7 @@ const BUILTIN_ROMS = [
   { label: 'Toy Story 3',       path: '/Toy Story 3 (USA) (En,Fr,Es) (NDSi Enhanced).nds', kind: 'retail', hint: '🟡' },
   { label: 'GTA Chinatown',     path: '/Grand Theft Auto - Chinatown Wars (USA) (En,Fr,De,Es,It).nds', kind: 'retail', hint: '🟡' },
   { label: 'LEGO Indy',         path: '/LEGO Indiana Jones - The Original Adventures (USA) (En,Fr,De,Es,It,Da).nds', kind: 'retail', hint: '🟡' },
-  { label: 'PMD: Blue Rescue',  path: '/Pokemon Mystery Dungeon - Blue Rescue Team (USA).nds', kind: 'retail', hint: '🟡' },
+  { label: 'PMD: Blue Rescue',  path: '/Pokemon Mystery Dungeon - Blue Rescue Team (USA).nds', kind: 'retail', hint: '🟢' },
   { label: 'Ben 10 Triple',     path: '/Ben 10 Triple Pack (USA) (En,Fr,De,Es,It).nds',     kind: 'retail', hint: '🟡' },
   { label: 'NFS ProStreet',     path: '/Need for Speed - ProStreet (USA) (En,Fr,De,Es,It) (Rev 1).nds', kind: 'retail', hint: '🟡' },
   { label: 'Dogz',              path: '/Dogz (USA).nds',                                    kind: 'retail', hint: '🟡' },
