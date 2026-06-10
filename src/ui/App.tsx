@@ -390,8 +390,18 @@ export function App() {
         const r = emu.runFrame();
         arm9Accum += r.arm9;
         arm7Accum += r.arm7;
-        paintCanvas(topCanvasRef.current, emu.ppu.fbA);
-        paintCanvas(bottomCanvasRef.current, emu.ppu.fbB);
+        // POWCNT1 bit 15 controls which engine maps to which physical
+        // screen. 1 = Engine A → top (default); 0 = Engine A → bottom.
+        // Brain Training writes 0 here so its main HUD on Engine B
+        // appears on the upper screen with touch UI on Engine A's
+        // bottom screen.
+        if ((emu.io9.powcnt1 >> 15) & 1) {
+          paintCanvas(topCanvasRef.current, emu.ppu.fbA);
+          paintCanvas(bottomCanvasRef.current, emu.ppu.fbB);
+        } else {
+          paintCanvas(topCanvasRef.current, emu.ppu.fbB);
+          paintCanvas(bottomCanvasRef.current, emu.ppu.fbA);
+        }
         const now = performance.now();
         if (now - lastFpsCheck > 500) {
           const fps = (emu.ppu.frameCount - framesAtLastCheck) / ((now - lastFpsCheck) / 1000);

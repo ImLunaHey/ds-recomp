@@ -34,6 +34,14 @@ export class IoBus {
   // require it set to function." Real BIOS sets it before jumping to
   // game code. We HLE the boot handoff so initialize it to 1.
   postflg = 1;
+  // POWCNT1 (ARM9 only, 0x04000304). Bit 15 = NDS Display Swap
+  // (0 = Engine A → bottom screen, 1 = Engine A → top screen). Brain
+  // Training (and a few other games) write 0 here to put the
+  // touch-driven content on the bottom physical screen while leaving
+  // the always-visible HUD on top via Engine B. The PPU's frame
+  // composer renders to fbA/fbB based on engine; the UI then picks
+  // which one to show on which canvas using the displaySwap flag.
+  powcnt1 = 0x820F;          // typical post-BIOS default per GBATEK
   // HALTCNT — write 0x80 puts the CPU into halt.
   haltcnt = 0;
   // Latch for partial (8/16-bit) writes into 32-bit-only GX ports
@@ -235,6 +243,10 @@ export class IoBus {
       case 0x04000216: return (this.irq.if_ >>> 16) & 0xFF;
       case 0x04000217: return (this.irq.if_ >>> 24) & 0xFF;
       case 0x04000300: return this.postflg & 0xFF;
+      case 0x04000304: return this.powcnt1 & 0xFF;
+      case 0x04000305: return (this.powcnt1 >>> 8) & 0xFF;
+      case 0x04000306: return (this.powcnt1 >>> 16) & 0xFF;
+      case 0x04000307: return (this.powcnt1 >>> 24) & 0xFF;
       // SPI bus (ARM7 only).
       case 0x040001C0: return this.spi ? this.spi.readCnt() & 0xFF       : 0;
       case 0x040001C1: return this.spi ? (this.spi.readCnt() >>> 8) & 0xFF : 0;
@@ -413,6 +425,10 @@ export class IoBus {
       case 0x04000216: this.irq.ackIf((v & 0xFF) << 16); return;
       case 0x04000217: this.irq.ackIf((v & 0xFF) << 24); return;
       case 0x04000300: this.postflg = v & 0xFF; return;
+      case 0x04000304: this.powcnt1 = (this.powcnt1 & ~0xFF)         | (v & 0xFF);        return;
+      case 0x04000305: this.powcnt1 = (this.powcnt1 & ~0xFF00)       | ((v & 0xFF) << 8); return;
+      case 0x04000306: this.powcnt1 = (this.powcnt1 & ~0xFF0000)     | ((v & 0xFF) << 16); return;
+      case 0x04000307: this.powcnt1 = (this.powcnt1 & ~0xFF000000)   | ((v & 0xFF) << 24); return;
       case 0x04000301: {
         // HALTCNT — bit 7 = HALT, bit 6 = GBA-mode (we don't implement),
         // 0x40 = sleep. Treat any of the halt-class bits as "halt CPU".
