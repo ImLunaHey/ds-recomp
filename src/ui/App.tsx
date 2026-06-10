@@ -5,6 +5,87 @@ import { decodeBannerIcon, decodeBannerTitle } from '../cart/banner';
 import { disasmArm } from '../cpu/disasm';
 import { SCREEN_W, SCREEN_H } from '../ppu/ppu';
 
+// Virtual control-pad button. ext=true → extKeyinput bit, otherwise
+// keyinput bit. Uses Pointer events so mouse + touch both work and the
+// setPointerCapture lets the user drag off the button without dropping
+// the press (which previously caused stuck buttons).
+function PadButton({
+  label, ext, bit, pressButton, releaseButton, className = '',
+}: {
+  label: string;
+  ext: boolean;
+  bit: number;
+  pressButton: (ext: boolean, bit: number) => void;
+  releaseButton: (ext: boolean, bit: number) => void;
+  className?: string;
+}) {
+  return (
+    <button
+      type="button"
+      className={`select-none touch-none rounded-full bg-zinc-700 active:bg-emerald-600 border border-zinc-500 text-zinc-100 font-mono font-bold ${className}`}
+      onPointerDown={(e) => {
+        (e.currentTarget as HTMLButtonElement).setPointerCapture(e.pointerId);
+        pressButton(ext, bit);
+      }}
+      onPointerUp={() => releaseButton(ext, bit)}
+      onPointerCancel={() => releaseButton(ext, bit)}
+      onContextMenu={(e) => e.preventDefault()}
+    >
+      {label}
+    </button>
+  );
+}
+
+// Composite virtual control pad. D-pad on the left, ABXY diamond on the
+// right, L/R as shoulder strips, START/SELECT bar in the middle.
+function ControlPad({
+  pressButton, releaseButton,
+}: {
+  pressButton: (ext: boolean, bit: number) => void;
+  releaseButton: (ext: boolean, bit: number) => void;
+}) {
+  const btn = { pressButton, releaseButton };
+  return (
+    <div className="mt-3 grid grid-cols-[1fr_auto_1fr] gap-3 items-center">
+      {/* D-pad */}
+      <div className="grid grid-cols-3 grid-rows-3 gap-1 w-32 h-32 justify-self-center">
+        <span />
+        <PadButton {...btn} label="↑" ext={false} bit={6} className="w-10 h-10 text-lg" />
+        <span />
+        <PadButton {...btn} label="←" ext={false} bit={5} className="w-10 h-10 text-lg" />
+        <span />
+        <PadButton {...btn} label="→" ext={false} bit={4} className="w-10 h-10 text-lg" />
+        <span />
+        <PadButton {...btn} label="↓" ext={false} bit={7} className="w-10 h-10 text-lg" />
+        <span />
+      </div>
+      {/* Middle column — L/R shoulders + START/SELECT */}
+      <div className="flex flex-col items-center gap-2">
+        <div className="flex gap-2">
+          <PadButton {...btn} label="L" ext={false} bit={9} className="w-12 h-7 text-xs" />
+          <PadButton {...btn} label="R" ext={false} bit={8} className="w-12 h-7 text-xs" />
+        </div>
+        <div className="flex gap-2">
+          <PadButton {...btn} label="SEL" ext={false} bit={2} className="w-12 h-7 text-[10px]" />
+          <PadButton {...btn} label="STA" ext={false} bit={3} className="w-12 h-7 text-[10px]" />
+        </div>
+      </div>
+      {/* ABXY — diamond */}
+      <div className="grid grid-cols-3 grid-rows-3 gap-1 w-32 h-32 justify-self-center">
+        <span />
+        <PadButton {...btn} label="X" ext={true}  bit={0} className="w-10 h-10 text-base" />
+        <span />
+        <PadButton {...btn} label="Y" ext={true}  bit={1} className="w-10 h-10 text-base" />
+        <span />
+        <PadButton {...btn} label="A" ext={false} bit={0} className="w-10 h-10 text-base" />
+        <span />
+        <PadButton {...btn} label="B" ext={false} bit={1} className="w-10 h-10 text-base" />
+        <span />
+      </div>
+    </div>
+  );
+}
+
 // Built-in ROMs that ship in public/. The .nds files themselves are
 // gitignored — users add their own copies.
 // ROM list grouped into Retail (commercial games) and Tests (homebrew /
@@ -332,22 +413,29 @@ export function App() {
     [tick, romBytes, emu.header],
   );
 
-  // ---- Keyboard → KEYINPUT / EXTKEYIN ----
-  // NDS KEYINPUT bits are LOW when pressed. We keep a bitmask of held keys
-  // here and apply it to both io9 / io7 on every keydown/keyup. The dance
-  // matters: writing to keyinput once at keydown then not at keyup leaves
-  // the bit stuck pressed.
+  // ---- Keyboard + virtual control-pad → KEYINPUT / EXTKEYIN ----
+  // NDS KEYINPUT bits are LOW when pressed. We keep a bitmask in refs so
+  // BOTH the keyboard handler and the virtual control-pad buttons can
+  // mutate the same state. apply() pushes the bitmask to io9 / io7.
+  const keyinputRef = useRef(0x03FF);
+  const extkeyRef = useRef(0x007F);
+  const applyKeys = useCallback(() => {
+    emu.io9.keyinput = keyinputRef.current;
+    emu.io7.keyinput = keyinputRef.current;
+    emu.io9.extKeyinput = extkeyRef.current;
+    emu.io7.extKeyinput = extkeyRef.current;
+  }, []);
+  const pressButton = useCallback((ext: boolean, bit: number) => {
+    if (ext) extkeyRef.current   &= ~(1 << bit);
+    else     keyinputRef.current &= ~(1 << bit);
+    applyKeys();
+  }, [applyKeys]);
+  const releaseButton = useCallback((ext: boolean, bit: number) => {
+    if (ext) extkeyRef.current   |= (1 << bit);
+    else     keyinputRef.current |= (1 << bit);
+    applyKeys();
+  }, [applyKeys]);
   useEffect(() => {
-    const KEYINPUT_DEFAULT = 0x03FF;
-    const EXTKEY_DEFAULT   = 0x007F;
-    let keyinput = KEYINPUT_DEFAULT;
-    let extkey   = EXTKEY_DEFAULT;
-    const apply = () => {
-      emu.io9.keyinput = keyinput;
-      emu.io7.keyinput = keyinput;
-      emu.io9.extKeyinput = extkey;
-      emu.io7.extKeyinput = extkey;
-    };
     // Map keyboard → NDS button bit. Bits below are bit positions in
     // keyinput (0..9) or extKeyinput (0..1, 6, 7). Returns null for keys
     // we don't handle.
@@ -371,17 +459,13 @@ export function App() {
     const onDown = (e: KeyboardEvent) => {
       const m = bitFor(e.key);
       if (!m) return;
-      if (m.ext) extkey   &= ~(1 << m.bit);
-      else       keyinput &= ~(1 << m.bit);
-      apply();
+      pressButton(m.ext, m.bit);
       e.preventDefault();
     };
     const onUp = (e: KeyboardEvent) => {
       const m = bitFor(e.key);
       if (!m) return;
-      if (m.ext) extkey   |= (1 << m.bit);
-      else       keyinput |= (1 << m.bit);
-      apply();
+      releaseButton(m.ext, m.bit);
       e.preventDefault();
     };
     window.addEventListener('keydown', onDown);
@@ -614,6 +698,14 @@ export function App() {
             }}
             onPointerUp={() => { emu.spi.touchX = null; emu.spi.touchY = null; }}
             onPointerCancel={() => { emu.spi.touchX = null; emu.spi.touchY = null; }}
+          />
+          {/* Virtual control pad — mirrors the keyboard mappings. Each
+              button uses Pointer events with setPointerCapture so drags
+              off the button don't drop mid-press. Long-press equivalent
+              is just "hold the pointer". */}
+          <ControlPad
+            pressButton={pressButton}
+            releaseButton={releaseButton}
           />
         </div>
 
