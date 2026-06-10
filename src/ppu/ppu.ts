@@ -163,7 +163,27 @@ export class Ppu {
   // Detection: the struct is reliably tagged "rom\0" at +0x00 once
   // NSMB's crt0 has stamped it (around frame 64). We watch for that
   // exact pattern every VBlank and install the thunk lazily.
+  //
+  // NSMB also installs SECONDARY FS handles for sound/overlay archives
+  // — different tags ("snd\0", "ovl\0", …) at unpredictable offsets in
+  // main RAM (the agent observed a hot polled state at 0x027E3774, well
+  // away from the 0x02096114 primary handle). The same dispatcher is
+  // called against those secondary handles too, so any handle whose
+  // vtable slot is still NULL will spin in the same wait loop. After
+  // installing the primary thunk we sweep main RAM for any FS-handle-
+  // shaped struct (FOUR-CC ASCII tag at +0x00, NULL vtable at +0x50)
+  // and point each one at the same MOV R0,#6 / BX LR stub.
   private nsmbThunkInstalled = false;
+  // Offsets (relative to main RAM base) of every FS-handle struct we
+  // have already patched, so re-sweeps skip them and we cap the total
+  // count. Real-world NSMB exposes ≤4 handles; the cap is a sanity
+  // limit, not a precise count.
+  private nsmbFsHandlesPatched: number[] = [];
+  // Frames since the primary thunk was installed — used to bound how
+  // long we keep sweeping. Once NSMB has stamped all its archives
+  // (well under 600 frames after the "rom" handle appears) further
+  // sweeps just waste cycles.
+  private nsmbFsSweepFrames = 0;
   // Deadlock detector: many retail games' SDK runtimes enter a state
   // where ARM9 has WFI'd waiting for an IPC FIFO message from ARM7,
   // but ARM7's bring-up code never reaches the send site because of
@@ -197,29 +217,155 @@ export class Ppu {
     this.ipc.framesSinceLastSend = -600;
   }
 
-  private applyNsmbFsThunk(ram: Uint8Array): void {
-    if (this.nsmbThunkInstalled) return;
-    const tagOff = 0x96114;           // 0x02096114 & 0x3FFFFF
-    if (ram[tagOff] !== 0x72 || ram[tagOff + 1] !== 0x6F ||
-        ram[tagOff + 2] !== 0x6D || ram[tagOff + 3] !== 0x00) return;
-    // Install thunk at 0x027FF800. We return 6 ("I/O ready/complete")
-    // rather than 0 ("idle") — the agent's first guess of 0 took the
-    // BEQ branch but the outer wait loop kept polling because no
-    // forward progress happened. Return-6 takes a different branch
-    // at 0x02069748 (BEQ 0x02069760 → calls a completion handler at
-    // 0x02069760 instead of just clearing bit 0x200).
-    const thunkOff = 0x7FF800 & 0x3FFFFF;
+  // Maximum number of FS handles we will patch in a single boot. NSMB
+  // installs at most a handful (rom/snd/ovl/…); anything beyond this
+  // is almost certainly a false positive from the structural scan and
+  // we'd rather under-patch than corrupt unrelated memory.
+  private static readonly NSMB_FS_HANDLE_CAP = 8;
+  // Stop sweeping for additional FS handles this many VBlanks after
+  // the primary "rom\0" handle was patched. NSMB stamps the rest of
+  // its archive registrations almost immediately, well inside this
+  // window.
+  private static readonly NSMB_FS_SWEEP_FRAMES = 600;
+
+  // Address of the shared "MOV R0,#6 ; BX LR" thunk inside main RAM
+  // (a BIOS-zerofilled stretch of the SDK firmware-data window). The
+  // ROM never executes from here, so it's safe to overlay our stub.
+  private static readonly NSMB_FS_THUNK_ADDR = 0x027FF800;
+
+  // Write the shared 2-instruction ARM thunk into main RAM. Idempotent:
+  // re-running the writes every VBlank simply restores the bytes if
+  // some code (unlikely in this dead zone) trampled them.
+  private writeNsmbFsThunkBody(ram: Uint8Array): void {
+    const thunkOff = Ppu.NSMB_FS_THUNK_ADDR & 0x3FFFFF;
     // MOV R0, #6  → e3a00006
     ram[thunkOff]     = 0x06; ram[thunkOff + 1] = 0x00;
     ram[thunkOff + 2] = 0xA0; ram[thunkOff + 3] = 0xE3;
     // BX LR       → e12fff1e
     ram[thunkOff + 4] = 0x1E; ram[thunkOff + 5] = 0xFF;
     ram[thunkOff + 6] = 0x2F; ram[thunkOff + 7] = 0xE1;
-    // Install pointer at 0x02096164 (R5 + 0x50).
-    const cbOff = 0x96164;
-    ram[cbOff]     = 0x00; ram[cbOff + 1] = 0xF8;
-    ram[cbOff + 2] = 0x7F; ram[cbOff + 3] = 0x02;
-    this.nsmbThunkInstalled = true;
+  }
+
+  // Point an FS-handle struct's vtable slot (+0x50) at our shared
+  // thunk. handleOff is the struct base relative to main RAM start.
+  private installNsmbFsHandlePointer(ram: Uint8Array, handleOff: number): void {
+    const cbOff = (handleOff + 0x50) & 0x3FFFFF;
+    ram[cbOff]     = (Ppu.NSMB_FS_THUNK_ADDR      ) & 0xFF;
+    ram[cbOff + 1] = (Ppu.NSMB_FS_THUNK_ADDR >>  8) & 0xFF;
+    ram[cbOff + 2] = (Ppu.NSMB_FS_THUNK_ADDR >> 16) & 0xFF;
+    ram[cbOff + 3] = (Ppu.NSMB_FS_THUNK_ADDR >> 24) & 0xFF;
+  }
+
+  // Known NitroSDK FS_Archive FOUR-CC tags, as little-endian u32 (the
+  // ASCII bytes laid out at the struct's +0x00 in memory). Allow-list
+  // matching only — restricting to known tags drops the structural
+  // sweep's false-positive rate on 4 MB of RAM essentially to zero.
+  // Add new tags here if a future game uses one we haven't seen.
+  //   "rom\0" → 0x006D6F72 (ROM file archive — NSMB's primary handle)
+  //   "ovl\0" → 0x006C766F (overlay archive)
+  //   "snd\0" → 0x00646E73 (sound archive)
+  //   "fnt\0" → 0x00746E66 (font archive)
+  //   "arm\0" → 0x006D7261 (ARM-binary archive)
+  //   "lz7\0" → 0x00377A6C (LZ77 compressed archive)
+  //   "fat\0" → 0x00746166 (FAT archive)
+  //   "dat\0" → 0x00746164 (generic data archive)
+  private static readonly NSMB_FS_TAGS: ReadonlyArray<number> = [
+    0x006D6F72, 0x006C766F, 0x00646E73, 0x00746E66,
+    0x006D7261, 0x00377A6C, 0x00746166, 0x00746164,
+  ];
+
+  // Test whether the 4-byte window at ramOff carries one of the known
+  // FS_Archive FOUR-CC tags. Operates on the little-endian u32 view so
+  // the comparison is a single integer compare per candidate.
+  private looksLikeNsmbFsTag(ram: Uint8Array, ramOff: number): boolean {
+    const word = this.readU32LE(ram, ramOff);
+    for (const tag of Ppu.NSMB_FS_TAGS) {
+      if (word === tag) return true;
+    }
+    return false;
+  }
+
+  // Read the 4-byte little-endian word at ramOff as a u32.
+  private readU32LE(ram: Uint8Array, ramOff: number): number {
+    return (ram[ramOff] |
+            (ram[ramOff + 1] << 8) |
+            (ram[ramOff + 2] << 16) |
+            (ram[ramOff + 3] << 24)) >>> 0;
+  }
+
+  // Decide whether the struct candidate at handleOff matches the FS-
+  // handle shape closely enough to patch. We require the +0x50 slot
+  // to be either NULL (the broken case we want to fix) or already
+  // point into our installed thunk (re-patch / idempotency). We
+  // deliberately do NOT match when +0x50 already points at an
+  // arbitrary address that isn't our thunk — that means the game/SDK
+  // installed a real callback and we must not clobber it. The
+  // FOUR-CC tag check upstream is strong enough on its own to keep
+  // the false-positive rate negligible on 4 MB of RAM.
+  private looksLikeNsmbFsHandle(ram: Uint8Array, handleOff: number): boolean {
+    const vtableOff = handleOff + 0x50;
+    if (vtableOff + 4 > ram.length) return false;
+    const vtable = this.readU32LE(ram, vtableOff);
+    return vtable === 0 || vtable === Ppu.NSMB_FS_THUNK_ADDR;
+  }
+
+  private applyNsmbFsThunk(ram: Uint8Array): void {
+    // Phase 1: primary "rom\0" handle at the known fixed offset. This
+    // is the original, narrow detector — kept as a fast-path so we
+    // don't pay sweep cost on every VBlank before the game has stamped
+    // its FS-Archive table.
+    if (!this.nsmbThunkInstalled) {
+      const tagOff = 0x96114;           // 0x02096114 & 0x3FFFFF
+      if (ram[tagOff] !== 0x72 || ram[tagOff + 1] !== 0x6F ||
+          ram[tagOff + 2] !== 0x6D || ram[tagOff + 3] !== 0x00) return;
+      // Install thunk at 0x027FF800. We return 6 ("I/O ready/complete")
+      // rather than 0 ("idle") — the agent's first guess of 0 took the
+      // BEQ branch but the outer wait loop kept polling because no
+      // forward progress happened. Return-6 takes a different branch
+      // at 0x02069748 (BEQ 0x02069760 → calls a completion handler at
+      // 0x02069760 instead of just clearing bit 0x200).
+      this.writeNsmbFsThunkBody(ram);
+      // Install pointer at 0x02096164 (R5 + 0x50).
+      const primaryHandleOff = 0x96114;
+      this.installNsmbFsHandlePointer(ram, primaryHandleOff);
+      this.nsmbFsHandlesPatched.push(primaryHandleOff);
+      this.nsmbThunkInstalled = true;
+    }
+
+    // Phase 2: sweep main RAM for any additional FS-handle-shaped
+    // structs (secondary archives like "snd\0" or "ovl\0"). NSMB's
+    // FS dispatcher is reused for every handle, so an un-patched
+    // secondary handle spins the same wait loop on its own state
+    // word. We keep sweeping for a bounded window after the primary
+    // handle appears, since the SDK may register additional archives
+    // a few frames later than the ROM archive.
+    if (this.nsmbFsSweepFrames >= Ppu.NSMB_FS_SWEEP_FRAMES) return;
+    this.nsmbFsSweepFrames++;
+    if (this.nsmbFsHandlesPatched.length >= Ppu.NSMB_FS_HANDLE_CAP) return;
+    // Stride by 4 bytes — FS_Archive structs are word-aligned. Stop
+    // 0x54 short of the end so the +0x50 vtable load doesn't run
+    // off the array. The inner reject (tag pattern) is a 4-byte
+    // memcmp-ish check that fails on the vast majority of slots,
+    // so the sweep stays cheap even on 4 MB of RAM.
+    const maxOff = ram.length - 0x54;
+    for (let off = 0; off <= maxOff; off += 4) {
+      if (!this.looksLikeNsmbFsTag(ram, off)) continue;
+      if (!this.looksLikeNsmbFsHandle(ram, off)) continue;
+      // Skip handles we've already patched (and skip re-patching
+      // anything whose +0x50 already points at our thunk — the
+      // looksLikeNsmbFsHandle check above allows that case so we
+      // can recognise our own fingerprint, but there's no work to
+      // do then).
+      if (this.nsmbFsHandlesPatched.includes(off)) continue;
+      const existing = this.readU32LE(ram, off + 0x50);
+      if (existing === Ppu.NSMB_FS_THUNK_ADDR) {
+        this.nsmbFsHandlesPatched.push(off);
+        continue;
+      }
+      this.installNsmbFsHandlePointer(ram, off);
+      this.nsmbFsHandlesPatched.push(off);
+      if (this.nsmbFsHandlesPatched.length >= Ppu.NSMB_FS_HANDLE_CAP) break;
+    }
   }
 
   // Findings from deeper RE of NSMB's main game task (entry 0x0206F1FC,
