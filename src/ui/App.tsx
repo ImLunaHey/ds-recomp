@@ -120,6 +120,8 @@ const BUILTIN_ROMS = [
   { label: 'Ben 10 Triple',     path: '/Ben 10 Triple Pack (USA) (En,Fr,De,Es,It).nds',     kind: 'retail', hint: '🟡' },
   { label: 'NFS ProStreet',     path: '/Need for Speed - ProStreet (USA) (En,Fr,De,Es,It) (Rev 1).nds', kind: 'retail', hint: '🟡' },
   { label: 'Dogz',              path: '/Dogz (USA).nds',                                    kind: 'retail', hint: '🟡' },
+  { label: 'DS Browser',        path: '/Nintendo DS Browser (USA, Europe) (En,Fr,De,Es,It).nds', kind: 'retail', hint: '🟡' },
+  { label: 'Skate It',          path: '/Skate It (USA) (En,Fr,De,Es,It,Nl).nds',            kind: 'retail', hint: '🟡' },
   // Retail — stalls or panics very early
   { label: 'Meteos',            path: '/Meteos.nds',                                       kind: 'retail', hint: '🔴' },
   { label: 'Plants vs Zombies', path: '/Plants vs. Zombies (USA).nds',                     kind: 'retail', hint: '🔴' },
@@ -128,6 +130,9 @@ const BUILTIN_ROMS = [
   { label: 'Pokemon Diamond',   path: '/1284 - Pokemon Diamond Version (v1.13) (E)(Independent).nds', kind: 'retail', hint: '🔴' },
   { label: 'Apollo Justice',    path: '/Apollo Justice - Ace Attorney (USA).nds',          kind: 'retail', hint: '🔴' },
   { label: 'SpongeBob Atlantis',path: "/SpongeBob's Atlantis SquarePantis (USA).nds",      kind: 'retail', hint: '🔴' },
+  { label: 'Art Academy (DSi)', path: '/Art Academy (USA) (NDSi Enhanced).nds',             kind: 'retail', hint: '🔴' },
+  { label: 'Disney Princess',   path: '/Disney Princess - Magical Jewels (USA).nds',        kind: 'retail', hint: '🔴' },
+  { label: 'LEGO Ninjago',      path: '/LEGO Battles - Ninjago (USA) (En,Fr,Es).nds',       kind: 'retail', hint: '🔴' },
   // Homebrew / PPU regression tests
   { label: 'RockWrestler',      path: '/rockwrestler.nds',                                 kind: 'test',   hint: '' },
   { label: 'obj mosaic',        path: '/test_obj_mosaic.nds',                              kind: 'test',   hint: '' },
