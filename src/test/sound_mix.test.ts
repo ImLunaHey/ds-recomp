@@ -13,7 +13,7 @@ import type { SoundMemory } from '../io/sound';
 function makeMem(samples: Uint8Array, off = 0): SoundMemory {
   const ram = new Uint8Array(64 * 1024);
   ram.set(samples, off);
-  return { mainRam: ram };
+  return { mainRam: ram, arm7Iwram: new Uint8Array(64 * 1024) };
 }
 
 // Wire master vol = max, master enable, L/R output from channel mix.
@@ -78,8 +78,8 @@ describe('Sound.mix — PCM8 basic decode', () => {
     // After master + per-channel + pan + /NUM_CHANNELS scaling.
     // Pan=64: gL = vol*(1-64/127) = 63/127, gR = vol*64/127 = 64/127.
     // Master vol = 127/127 = 1; per-output divide is /16.
-    const gL = (63 / 127) / 16;
-    const gR = (64 / 127) / 16;
+    const gL = (63 / 127) / 4;
+    const gR = (64 / 127) / 4;
     // Sample 0: +0.5 → L = 0.5*gL, R = 0.5*gR.
     expect(out[0]).toBeCloseTo(0.5 * gL, 5);
     expect(out[1]).toBeCloseTo(0.5 * gR, 5);
@@ -123,7 +123,7 @@ describe('Sound.mix — stereo separation via pan', () => {
     // must contribute 0 to L — verify each side carries only one
     // channel's signal. With pan=0/127 and vol=127, the per-side
     // gain is exactly (1 * 127/127) / 16 = 1/16 per active channel.
-    const expected = 0.5 * (1 / 16);
+    const expected = 0.5 * (1 / 4);
     expect(out[0]).toBeCloseTo(expected, 4);     // L = ch0 only
     expect(out[1]).toBeCloseTo(expected, 4);     // R = ch1 only
     // Sanity — both sides should be EQUAL (each side has exactly one
@@ -155,8 +155,8 @@ describe('Sound.mix — PCM16 basic decode', () => {
     });
 
     const out = sound.mix(2, OUTPUT_RATE);
-    const gL = (63 / 127) / 16;
-    const gR = (64 / 127) / 16;
+    const gL = (63 / 127) / 4;
+    const gR = (64 / 127) / 4;
     expect(out[0]).toBeCloseTo(0.5 * gL, 5);
     expect(out[1]).toBeCloseTo(0.5 * gR, 5);
     expect(out[2]).toBeCloseTo(-0.5 * gL, 5);
@@ -186,7 +186,7 @@ describe('Sound.mix — one-shot ends mid-buffer', () => {
     });
 
     const out = sound.mix(8, OUTPUT_RATE);
-    const gL = (63 / 127) / 16;
+    const gL = (63 / 127) / 4;
     // First two samples are real signal, after that all zeros.
     expect(out[0]).toBeCloseTo(0.5 * gL, 5);
     expect(out[2]).toBeCloseTo(0.5 * gL, 5);

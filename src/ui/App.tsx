@@ -320,11 +320,27 @@ export function App() {
   const [running, setRunning] = useState(false);
   const [tick, setTick] = useState(0);
   const [stats, setStats] = useState({ arm9: 0, arm7: 0, frame: 0, fps: 0 });
-  // Audio output toggle. OFF by default — browser autoplay policy
-  // forbids us from creating an AudioContext at load time, and the
-  // user might not want sound anyway. Flipping this on calls
-  // startAudio() from within the user-gesture click handler.
-  const [audioOn, setAudioOn] = useState(false);
+  // Audio output toggle. State is ON by default per user preference,
+  // but the actual AudioContext can only start inside a user-gesture
+  // handler (browser autoplay policy). We mark it on, and the first
+  // pointer/key event anywhere on the page triggers startAudio().
+  const [audioOn, setAudioOn] = useState(true);
+  const audioStartedRef = useRef(false);
+  useEffect(() => {
+    if (!audioOn || audioStartedRef.current) return;
+    const start = () => {
+      if (audioStartedRef.current) return;
+      audioStartedRef.current = true;
+      startAudio(emu.io7.sound, emu.mem);
+    };
+    // Any of these counts as a user gesture per browser policy.
+    window.addEventListener('pointerdown', start, { once: true });
+    window.addEventListener('keydown', start, { once: true });
+    return () => {
+      window.removeEventListener('pointerdown', start);
+      window.removeEventListener('keydown', start);
+    };
+  }, [audioOn]);
 
   const iconCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const topCanvasRef = useRef<HTMLCanvasElement | null>(null);

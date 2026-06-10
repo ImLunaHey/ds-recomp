@@ -55,6 +55,7 @@ interface Channel {
 // unmapped sources come back as silence rather than a crash.
 export interface SoundMemory {
   mainRam: Uint8Array;
+  arm7Iwram: Uint8Array;
 }
 
 export class Sound {
@@ -194,28 +195,46 @@ export class Sound {
   // Fetch one source sample for `c` at integer source-position `pos`,
   // returning a signed value in roughly [-1, 1]. PSG / ADPCM return
   // 0 (silent placeholder) until proper decoders land.
+  // Resolve a sound-sample address (main RAM mirrors at 0x027xxxxx,
+  // ARM7 IWRAM at 0x037xxxxx) to a (bytes, offset) pair, or null if the
+  // address doesn't land in a region we can stream from. Real DS sound
+  // DMA reads main RAM most of the time, but some SDK paths place small
+  // looped samples in ARM7 IWRAM — without this branch they were silent.
+  private resolveSampleByte(addr: number): { bytes: Uint8Array; offset: number } | null {
+    if (!this.mem) return null;
+    const a = addr >>> 0;
+    if (a >= 0x02000000 && a < 0x03000000) {
+      // Main RAM (4 MB) + mirror at 0x027xxxxx — mask to bytes.
+      const off = (a - 0x02000000) & (this.mem.mainRam.length - 1);
+      return { bytes: this.mem.mainRam, offset: off };
+    }
+    if (a >= 0x037F8000 && a < 0x03810000) {
+      // ARM7 IWRAM (64 KB)
+      const off = a - 0x037F8000;
+      if (off < this.mem.arm7Iwram.length) {
+        return { bytes: this.mem.arm7Iwram, offset: off };
+      }
+    }
+    return null;
+  }
+
   private fetchSample(c: Channel, pos: number): number {
-    if (!this.mem) return 0;
-    const ram = this.mem.mainRam;
     const fmt = (c.cnt >> 29) & 0x3;
     if (fmt === FMT_PCM8) {
       // 1 byte per source sample. SOUND_LEN is in halfwords so the
       // PCM8 sample count is len*2 (each halfword = 2 bytes = 2 samples).
-      const byteIdx = (c.sad + pos) >>> 0;
-      const offset = byteIdx - 0x02000000;
-      if (offset < 0 || offset >= ram.length) return 0;
-      // PCM8 is signed 8-bit, two's complement.
-      const u = ram[offset];
+      const r = this.resolveSampleByte((c.sad + pos) >>> 0);
+      if (!r) return 0;
+      const u = r.bytes[r.offset];
       const s = u < 0x80 ? u : u - 0x100;
       return s / 128;
     }
     if (fmt === FMT_PCM16) {
       // 2 bytes per source sample. SOUND_LEN halfwords = sample count.
-      const byteIdx = (c.sad + pos * 2) >>> 0;
-      const offset = byteIdx - 0x02000000;
-      if (offset < 0 || offset + 1 >= ram.length) return 0;
-      const lo = ram[offset];
-      const hi = ram[offset + 1];
+      const r = this.resolveSampleByte((c.sad + pos * 2) >>> 0);
+      if (!r) return 0;
+      const lo = r.bytes[r.offset];
+      const hi = r.bytes[r.offset + 1];
       const u = (lo | (hi << 8)) & 0xFFFF;
       const s = u < 0x8000 ? u : u - 0x10000;
       return s / 32768;
@@ -254,11 +273,13 @@ export class Sound {
     // SOUNDCNT bit 15 = master enable. When 0, hardware mutes all
     // channels; we honor that here.
     if ((this.soundcnt & 0x8000) === 0) return out;
-    // Master vol (SOUNDCNT bits 0..6, 0..127). Channel mix is already
-    // in [-1, 1]; divide by NUM_CHANNELS so the worst-case all-channels-
-    // hot mix stays clip-safe.
+    // Master vol (SOUNDCNT bits 0..6, 0..127). Dividing by NUM_CHANNELS
+    // (16) was over-conservative — most channels are silent so the
+    // result was barely audible. Dividing by 4 (typical active-channel
+    // count) gives reasonable headroom and we clamp per sample after
+    // the channel accumulation so it can't clip.
     const masterVol = (this.soundcnt & 0x7F) / 127;
-    const masterScale = masterVol / NUM_CHANNELS;
+    const masterScale = masterVol / 4;
 
     for (let i = 0; i < NUM_CHANNELS; i++) {
       const c = this.channels[i];
@@ -302,6 +323,13 @@ export class Sound {
         pos += step;
       }
       c.posFrac = pos;
+    }
+    // Final hard clamp to [-1, 1] so the louder master scale doesn't
+    // produce out-of-range values when many channels overlap.
+    for (let n = 0; n < out.length; n++) {
+      const v = out[n];
+      if (v >  1) out[n] =  1;
+      else if (v < -1) out[n] = -1;
     }
     return out;
   }

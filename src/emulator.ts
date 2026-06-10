@@ -103,7 +103,86 @@ export class Emulator {
     this.io7.bios = this.bios7;
   }
 
+  // Wipe all volatile state — main RAM, VRAM, PRAM, OAM, IRQ controllers,
+  // DMA channels, IPC queues, IO registers, timers, sound channels, etc.
+  // — back to power-on defaults. Called by loadRom() so switching ROMs
+  // doesn't leak the previous game's code/graphics/IPC into the new one.
+  // Without this, some games would behave erratically until the user
+  // refreshed the page (and got a fresh Emulator from the UI).
+  // We intentionally KEEP: firmware blob in Spi (read-only data; new
+  // game expects firmware to be readable), save chip's persisted bytes
+  // (caller controls reload via cart.loadSav), and the BIOS stubs
+  // (re-installed below).
+  reset(): void {
+    this.mem.mainRam.fill(0);
+    this.mem.vram.fill(0);
+    this.mem.pram.fill(0);
+    this.mem.oam.fill(0);
+    this.mem.sharedWram.fill(0);
+    this.mem.arm7Iwram.fill(0);
+    // IRQ controllers
+    this.irq9.ie = 0; this.irq9.if_ = 0; this.irq9.ime = false; this.irq9.recache();
+    this.irq7.ie = 0; this.irq7.if_ = 0; this.irq7.ime = false; this.irq7.recache();
+    // PPU register state. Construction wipes vramcnt/pram/oam already
+    // but DISPCNT/scroll/affine/window/blend live in mutable arrays we
+    // own here.
+    this.ppu.dispcntA = 0; this.ppu.dispcntB = 0;
+    this.ppu.vcount = 0; this.ppu.cyclesAccum = 0;
+    this.ppu.dispstat = 0; this.ppu.frameCount = 0;
+    this.ppu.vramcnt.fill(0);
+    this.ppu.bgCntA.fill(0); this.ppu.bgCntB.fill(0);
+    this.ppu.bgHofsA.fill(0); this.ppu.bgHofsB.fill(0);
+    this.ppu.bgVofsA.fill(0); this.ppu.bgVofsB.fill(0);
+    // IPC queues and enables
+    this.ipc.q9to7.clear();
+    this.ipc.q7to9.clear();
+    this.ipc.enable9 = false; this.ipc.enable7 = false;
+    this.ipc.error9 = false; this.ipc.error7 = false;
+    this.ipc.sync9Out = 0; this.ipc.sync7Out = 0;
+    this.ipc.realFifoTrafficSeen = false;
+    this.ipc.framesSinceLastSend = 0;
+    // DMA channels — reset all 8 to disabled
+    for (const dma of [this.dma9, this.dma7]) {
+      for (const ch of dma.channels) {
+        ch.src = 0; ch.dst = 0; ch.countCtrl = 0; ch.enabled = false;
+        ch.timing = 0; ch.srcMode = 0; ch.dstMode = 0;
+        ch.repeat = false; ch.word32 = false; ch.irqOnDone = false;
+        ch.countLatched = 0; ch.srcLatched = 0; ch.dstLatched = 0;
+      }
+    }
+    // IO bus state
+    this.io9.keyinput = 0x3FF; this.io9.extKeyinput = 0x7F;
+    this.io7.keyinput = 0x3FF; this.io7.extKeyinput = 0x7F;
+    this.io9.postflg = 1; this.io9.powcnt1 = 0x820F;
+    this.io7.postflg = 1; this.io7.powcnt1 = 0x820F;
+    this.io9.haltcnt = 0; this.io7.haltcnt = 0;
+    this.io9.gxLatch.clear(); this.io9.gxLatchMask.clear();
+    this.io7.gxLatch.clear(); this.io7.gxLatchMask.clear();
+    // Timers
+    for (const timers of [this.timers9, this.timers7]) {
+      timers.counter.fill(0);
+      timers.reload.fill(0);
+      timers.cnt.fill(0);
+    }
+    // Sound channels
+    for (const ch of this.io7.sound.channels) {
+      ch.cnt = 0; ch.sad = 0; ch.tmr = 0; ch.pnt = 0; ch.len = 0;
+      ch.cyclesLeft = 0;
+    }
+    this.io7.sound.soundcnt = 0;
+    this.io7.sound.soundbias = 0x200;
+    // WiFi
+    this.wifi.io.fill(0);
+    this.wifi.powerState = 0;
+    // CPU state — re-install BIOS stubs so the IRQ handler pointer
+    // literal at 0x00000000 is fresh after the DTCM-aware patching done
+    // by Cp15.
+    installBiosStubs(this.mem);
+    this.totalDots = 0;
+  }
+
   loadRom(rom: Uint8Array): void {
+    this.reset();
     this.header = parseNdsHeader(rom);
     this.load = loadNdsRom(rom, this.header, this.bus9, this.bus7, this.mem);
     this.overlays = loadAllOverlays(rom, this.header, this.bus9, this.bus7, this.mem);
