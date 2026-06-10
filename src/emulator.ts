@@ -6,7 +6,7 @@
 import { SharedMemory } from './memory/shared';
 import { Bus9 } from './memory/bus9';
 import { Bus7 } from './memory/bus7';
-import { VramRouter } from './memory/vram_router';
+import { VramRouter, setActiveVramRouter } from './memory/vram_router';
 import { loadNdsRom, type LoadResult } from './cart/loader';
 import { parseNdsHeader, type NdsHeader } from './cart/header';
 import { Cart } from './cart/cart';
@@ -61,6 +61,9 @@ export class Emulator {
     const vramRouter = new VramRouter(this.ppu.vramcnt);
     this.bus9.vram = vramRouter;
     this.bus7.vram = vramRouter;
+    // Make the router visible to the PPU scanline renderers, which can't
+    // receive it through their (frozen) function signatures.
+    setActiveVramRouter(vramRouter);
     this.ipc = new Ipc(this.irq9, this.irq7);
     this.cart = new Cart();
     this.dma9 = new Dma(this.bus9, this.irq9, true);

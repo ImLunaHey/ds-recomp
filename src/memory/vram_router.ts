@@ -160,4 +160,85 @@ export class VramRouter {
     if ((this.vramcnt[3] & 0x87) === 0x82) v |= 0x02;
     return v;
   }
+
+  // ─── Extended palette resolution ───────────────────────────────────
+  //
+  // The DS exposes BG and OBJ "extended" palettes via four virtual
+  // alias regions on the ARM9 bus. The renderer doesn't read these
+  // through resolveArm9() — they aren't true VRAM-window aliases, the
+  // PPU consults them directly through the helpers below — so the
+  // routing here is just "which bank is mapped to this ext-palette
+  // role under VRAMCNT, and at what offset within the bank?". Per
+  // GBATEK §"VRAM Allocation":
+  //
+  //   Engine A BG ext palette (4 slots × 8 KB = 32 KB at 0x06880000):
+  //     Bank E MST=4: provides all 4 slots.
+  //     Bank F MST=4: provides one 8 KB slot, picked by OFFSET:
+  //       OFFSET bit 0 = 0 → slots 0/1, = 1 → slots 2/3
+  //       OFFSET bit 1 = which slot in the chosen pair
+  //     Bank G MST=4: same scheme as F.
+  //
+  //   Engine A OBJ ext palette (single 8 KB region at 0x06890000):
+  //     Bank F MST=5: provides 8 KB (low half of the bank).
+  //     Bank G MST=5: same as F.
+  //
+  //   Engine B BG ext palette (4 slots × 8 KB = 32 KB at 0x06898000):
+  //     Bank H MST=2: provides all 4 slots.
+  //
+  //   Engine B OBJ ext palette (single 8 KB region at 0x068A0000):
+  //     Bank I MST=3: provides 8 KB.
+
+  // Engine A BG ext palette slot lookup. slot ∈ [0,4), off ∈ [0,0x2000).
+  // Returns the flat shared.vram[] byte index, or -1 if no bank is
+  // currently mapped to that role/slot.
+  resolveBgExtPalA(slot: number, off: number): number {
+    // Bank E MST=4 covers all 4 slots (32 KB).
+    if ((this.vramcnt[4] & 0x87) === 0x84) {
+      return BANK_INFO[4].start + slot * 0x2000 + off;
+    }
+    // Banks F and G with MST=4 each contribute a single 8 KB slot.
+    // OFFSET bit 0 picks the pair (0 = slots 0/1, 1 = slots 2/3),
+    // OFFSET bit 1 picks within the pair.
+    for (const i of [5, 6]) {
+      if ((this.vramcnt[i] & 0x87) !== 0x84) continue;
+      const ofsField = (this.vramcnt[i] >> 3) & 0x3;
+      const mappedSlot = (ofsField & 1) * 2 + ((ofsField >> 1) & 1);
+      if (mappedSlot === slot) {
+        return BANK_INFO[i].start + off;
+      }
+    }
+    return -1;
+  }
+
+  // Engine B BG ext palette. Bank H MST=2 supplies all 4 slots (32 KB).
+  resolveBgExtPalB(slot: number, off: number): number {
+    if ((this.vramcnt[7] & 0x87) === 0x82) {
+      return BANK_INFO[7].start + slot * 0x2000 + off;
+    }
+    return -1;
+  }
+
+  // Engine A OBJ ext palette. F (MST=5) wins over G if both are mapped.
+  resolveObjExtPalA(off: number): number {
+    if ((this.vramcnt[5] & 0x87) === 0x85) return BANK_INFO[5].start + off;
+    if ((this.vramcnt[6] & 0x87) === 0x85) return BANK_INFO[6].start + off;
+    return -1;
+  }
+
+  // Engine B OBJ ext palette. Bank I MST=3 (8 KB).
+  resolveObjExtPalB(off: number): number {
+    if ((this.vramcnt[8] & 0x87) === 0x83) {
+      return BANK_INFO[8].start + off;
+    }
+    return -1;
+  }
 }
+
+// Module-level reference to the active VramRouter. The PPU scanline
+// renderers (text_bg.ts, sprites.ts) need to look up ext palette banks,
+// but their function signatures are locked by engine_a.ts. Emulator
+// installs the active router here at startup so the renderers can find
+// it without a parameter-passing change.
+let _activeRouter: VramRouter | null = null;
+export function setActiveVramRouter(r: VramRouter): void { _activeRouter = r; }
+export function getActiveVramRouter(): VramRouter | null { return _activeRouter; }

@@ -11,6 +11,7 @@
 // extended palettes + OBJ window come later.
 
 import type { SharedMemory } from '../memory/shared';
+import { getActiveVramRouter } from '../memory/vram_router';
 
 // Shape × Size → (W, H) pixel dimensions. From GBATEK §"OBJ Attribute 0".
 const SHAPE_SIZE: ReadonlyArray<ReadonlyArray<readonly [number, number]>> = [
@@ -47,6 +48,15 @@ export function renderObjScanline(
   const oam = mem.oam;
   const vram = mem.vram;
   const pram = mem.pram;
+
+  // OBJ ext palettes are enabled when DISPCNT bit 31 is set. When on
+  // AND an 8bpp sprite is being drawn, the OAM palette-bank field
+  // (attr2 bits 12-15) chooses one of 16 256-color sub-palettes inside
+  // the engine's OBJ-ext-palette region (8 KB) instead of using the
+  // base OBJ PRAM. `isEngineA` is derived from pramBase (0x200 vs 0x600).
+  const objExtPalEnabled = (dispcnt & (1 << 31)) !== 0;
+  const isEngineA = pramBase === 0x200;
+  const router = objExtPalEnabled ? getActiveVramRouter() : null;
 
   // DISPCNT bit 4 = OBJ 1D mapping (0 = 2D, 1 = 1D).
   // DISPCNT bits 20:22 = OBJ tile-boundary granularity in 1D mapping
@@ -150,9 +160,26 @@ export function renderObjScanline(
           : vramObjBase + (tileNum * 32) + (tileRow * 1024 + tileCol * 64) + subRow * 8 + subCol;
         palIdx = vram[addr] | 0;
         if (palIdx === 0) continue;
-        // 256-color OBJ palette starts at pramBase.
-        const palOff = pramBase + palIdx * 2;
-        const c = pram[palOff] | (pram[palOff + 1] << 8);
+        // 256-color OBJ palette starts at pramBase. When OBJ ext
+        // palettes are enabled, the OAM palette bank (attr2 bits 12-15)
+        // picks a 256-color sub-palette inside the engine's OBJ ext
+        // palette region, replacing the base PRAM lookup.
+        let c: number;
+        if (router) {
+          const off = palBank * 512 + palIdx * 2;
+          const idx = isEngineA
+            ? router.resolveObjExtPalA(off)
+            : router.resolveObjExtPalB(off);
+          if (idx >= 0) {
+            c = vram[idx] | (vram[idx + 1] << 8);
+          } else {
+            const palOff = pramBase + palIdx * 2;
+            c = pram[palOff] | (pram[palOff + 1] << 8);
+          }
+        } else {
+          const palOff = pramBase + palIdx * 2;
+          c = pram[palOff] | (pram[palOff + 1] << 8);
+        }
         const cur = out[screenX];
         if (cur.color === 0 || priority < cur.priority) {
           cur.color = c & 0x7FFF;

@@ -8,6 +8,7 @@
 // 6=large bitmap) come later.
 
 import type { SharedMemory } from '../memory/shared';
+import { getActiveVramRouter } from '../memory/vram_router';
 
 export interface BgRegs {
   // 16-bit BGxCNT for each of 4 BGs.
@@ -41,6 +42,13 @@ export function renderTextScanline(
 ): void {
   const vram = mem.vram;
   const pram = mem.pram;
+
+  // BG ext palettes are enabled when DISPCNT bit 30 is set. When enabled
+  // AND a particular BG is in 256-color mode (BGCNT bit 7), the palette
+  // index lookup uses a per-tile palette bank (BGCNT screen entry bits
+  // 12-15) into the extended palette region, not the base PRAM.
+  const extPalEnabled = (dispcnt & (1 << 30)) !== 0;
+  const router = extPalEnabled ? getActiveVramRouter() : null;
 
   // Backdrop: palette index 0.
   const backdrop = (pram[pramBase] | (pram[pramBase + 1] << 8)) & 0x7FFF;
@@ -106,8 +114,30 @@ export function renderTextScanline(
         const tileAddr = bgVramBase + charBase + tileNum * 64;
         colorIdx = vram[tileAddr + pixY * 8 + pixX];
         if (colorIdx === 0) continue;
-        const palOff = pramBase + colorIdx * 2;
-        const c = pram[palOff] | (pram[palOff + 1] << 8);
+        let c: number;
+        if (router) {
+          // Ext palette path: tile screen entry's bits 12-15 (palBank)
+          // pick which of the 16 256-color sub-palettes inside the
+          // engine's ext-palette slot to use.
+          //   slot = bg layer index; for BG0/BG1, BGCNT bit 13 swaps
+          //   in slots 2/3 instead (matches melonDS/DeSmuME).
+          let slot = bg;
+          if (bg < 2 && (cnt & 0x2000) !== 0) slot += 2;
+          const off = palBank * 512 + colorIdx * 2;
+          const idx = isEngineA
+            ? router.resolveBgExtPalA(slot, off)
+            : router.resolveBgExtPalB(slot, off);
+          if (idx >= 0) {
+            c = vram[idx] | (vram[idx + 1] << 8);
+          } else {
+            // No bank mapped for this slot → fall back to base PRAM.
+            const palOff = pramBase + colorIdx * 2;
+            c = pram[palOff] | (pram[palOff + 1] << 8);
+          }
+        } else {
+          const palOff = pramBase + colorIdx * 2;
+          c = pram[palOff] | (pram[palOff + 1] << 8);
+        }
         lineColors[x] = c & 0x7FFF;
       } else {
         // 32 bytes per tile (4bpp).
