@@ -487,18 +487,44 @@ export function App() {
     };
   }, [emu]);
 
-  // Main run loop. Each rAF: run one frame, paint both screens, sample stats.
+  // Main run loop. requestAnimationFrame fires at the monitor refresh rate
+  // (60Hz on most displays, but 120Hz+ on high-refresh screens) — so naively
+  // running one emu.runFrame() per rAF tick made games run at 2× speed on
+  // 120Hz monitors. The DS runs at ~59.83 Hz; we pace to that target by
+  // tracking real-time elapsed and running runFrame() only when at least
+  // one DS-frame interval has passed. Bounded catch-up (max 4 frames per
+  // rAF tick) prevents runaway when the tab regains focus after being
+  // backgrounded.
   useEffect(() => {
     if (!running) return;
+    const DS_FRAME_MS = 1000 / 59.8261;
+    const MAX_CATCHUP_FRAMES = 4;
     let lastFpsCheck = performance.now();
     let framesAtLastCheck = emu.ppu.frameCount;
     let arm9Accum = 0, arm7Accum = 0;
+    let frameDebt = 0;        // accumulated real-time ms not yet consumed by a runFrame
+    let prevTickTime = performance.now();
 
     const loop = () => {
       try {
-        const r = emu.runFrame();
-        arm9Accum += r.arm9;
-        arm7Accum += r.arm7;
+        const now = performance.now();
+        frameDebt += now - prevTickTime;
+        prevTickTime = now;
+
+        let framesThisTick = 0;
+        let r = { arm9: 0, arm7: 0, frame: emu.ppu.frameCount };
+        while (frameDebt >= DS_FRAME_MS && framesThisTick < MAX_CATCHUP_FRAMES) {
+          r = emu.runFrame();
+          arm9Accum += r.arm9;
+          arm7Accum += r.arm7;
+          frameDebt -= DS_FRAME_MS;
+          framesThisTick++;
+        }
+        // If we burned the whole catchup budget without clearing debt
+        // (slow machine, long stall), discard the rest so we don't
+        // perpetually trail. Better to skip frames than visibly slow down.
+        if (framesThisTick === MAX_CATCHUP_FRAMES) frameDebt = 0;
+
         // POWCNT1 bit 15 controls which engine maps to which physical
         // screen. 1 = Engine A → top (default); 0 = Engine A → bottom.
         // Brain Training writes 0 here so its main HUD on Engine B
@@ -511,7 +537,6 @@ export function App() {
           paintCanvas(topCanvasRef.current, emu.ppu.fbB);
           paintCanvas(bottomCanvasRef.current, emu.ppu.fbA);
         }
-        const now = performance.now();
         if (now - lastFpsCheck > 500) {
           const fps = (emu.ppu.frameCount - framesAtLastCheck) / ((now - lastFpsCheck) / 1000);
           setStats({
