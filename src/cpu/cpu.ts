@@ -92,8 +92,21 @@ export class Cpu {
       (decode >= 0x03000000 && decode < 0x04000000) ||
       (decode >= 0xFFFF0000);
     if (!inValid) {
-      // Simulate BX LR: jump back to caller.
+      // Simulate BX LR: jump back to caller. If LR is ALSO invalid
+      // (e.g. the program counter and link register both got corrupted
+      // by the same bad pop), don't oscillate forever — just halt the
+      // CPU so the emulator stops running garbage.
       const lr = s.r[14] >>> 0;
+      const lrTarget = lr & ~3;
+      const lrValid =
+        (lrTarget >= lowBound && lrTarget < 0x02400000) ||
+        (lrTarget >= 0x03000000 && lrTarget < 0x04000000) ||
+        (lrTarget >= 0xFFFF0000);
+      if (!lrValid) {
+        s.halted = true;
+        this.cycles += 1;
+        return 1;
+      }
       if (lr & 1) { s.cpsr |= FLAG_T; s.r[15] = lr & ~1; }
       else        { s.cpsr &= ~FLAG_T; s.r[15] = lr & ~3; }
       this.flushPipeline();
