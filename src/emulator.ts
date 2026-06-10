@@ -162,6 +162,11 @@ export class Emulator {
       // ARM7 uses the same dot budget — its prescalers divide further.
       this.timers9.step(batch * 2);   // ARM9 runs 2× per dot in our model
       this.timers7.step(batch);
+      // Sound chip is on ARM7's side; step it with ARM7 cycle budget so
+      // channels with key-on eventually clear when their sample length
+      // elapses (games poll the key-on bit to know when to start the
+      // next sample).
+      this.io7.sound.step(batch);
       dotsThisFrame += batch;
       if (ppu.frameDone) { ppu.frameDone = false; break; }
     }

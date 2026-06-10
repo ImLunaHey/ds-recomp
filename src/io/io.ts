@@ -18,6 +18,7 @@ import type { Spi } from './spi';
 import type { BiosHle } from '../bios/hle';
 import type { Timers } from './timers';
 import { Rtc } from './rtc';
+import { Sound } from './sound';
 
 export class IoBus {
   irq: Irq;
@@ -30,6 +31,10 @@ export class IoBus {
   spi: Spi | null;         // ARM7 only — null on the ARM9 side
   // RTC is ARM7-side; ARM9 access is masked off in real hardware.
   rtc: Rtc = new Rtc();
+  // Sound chip is ARM7-only; ARM9 sees these addresses as the 3D
+  // engine's GXFIFO/direct command ports. The IoBus check below
+  // gates routing on isArm9 to keep them separate.
+  sound: Sound = new Sound();
   bios: BiosHle | null = null;  // attached after Cpu construction
   timers: Timers | null = null; // wired in Emulator
   isArm9: boolean;
@@ -155,6 +160,12 @@ export class IoBus {
   read8(addr: number): number {
     addr = addr & 0x0FFFFFFF;
     if (this.math && addr >= 0x04000280 && addr < 0x040002C0) return this.math.read8(addr);
+    // ARM7 sound: 0x04000400-0x040005FF is the sound chip (the same
+    // address range is GX for ARM9, but reads from GX ports return 0
+    // on real hardware so this gate is safe).
+    if (!this.isArm9 && addr >= 0x04000400 && addr < 0x04000600) {
+      return this.sound.readByte(addr | 0x04000000);
+    }
     if (addr >= 0x04000000 && addr < 0x04000004) {
       return (this.ppu.dispcntA >>> ((addr & 3) * 8)) & 0xFF;
     }
@@ -310,6 +321,11 @@ export class IoBus {
     // surrounding word and fire when complete. ARM9-only.
     if (this.isArm9 && this.isGxAddr(addr | 0x04000000)) {
       this.gxPartialWrite(addr, v & 0xFF, 1);
+      return;
+    }
+    // ARM7 sound: 0x04000400-0x040005FF.
+    if (!this.isArm9 && addr >= 0x04000400 && addr < 0x04000600) {
+      this.sound.writeByte(addr | 0x04000000, v);
       return;
     }
     if (addr >= 0x04000000 && addr < 0x04000004) {
