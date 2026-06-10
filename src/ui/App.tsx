@@ -100,6 +100,8 @@ const BUILTIN_ROMS = [
   { label: 'Brain Training',    path: '/Brain Training.nds',                               kind: 'retail', hint: '🟢' },
   { label: 'Cooking Mama',      path: '/Cooking Mama (USA).nds',                           kind: 'retail', hint: '🟢' },
   { label: 'Age of Empires',    path: '/Age of Empires - Mythologies (USA) (En,Fr).nds',    kind: 'retail', hint: '🟢' },
+  { label: 'Spider-Man EoT',    path: '/Spider-Man - Edge of Time (USA) (En,Fr).nds',       kind: 'retail', hint: '🟢' },
+  { label: 'Tony Hawk PG',      path: "/Tony Hawk's Proving Ground (USA).nds",              kind: 'retail', hint: '🟢' },
   // Retail — boots past SDK init, no visible content yet
   { label: 'LEGO Star Wars',    path: '/LEGO Star Wars - The Complete Saga (USA).nds',     kind: 'retail', hint: '🟡' },
   { label: 'Pokemon Platinum',  path: '/Pokemon - Platinum Version (USA) (Rev 1).nds',     kind: 'retail', hint: '🟡' },
@@ -115,6 +117,9 @@ const BUILTIN_ROMS = [
   { label: 'GTA Chinatown',     path: '/Grand Theft Auto - Chinatown Wars (USA) (En,Fr,De,Es,It).nds', kind: 'retail', hint: '🟡' },
   { label: 'LEGO Indy',         path: '/LEGO Indiana Jones - The Original Adventures (USA) (En,Fr,De,Es,It,Da).nds', kind: 'retail', hint: '🟡' },
   { label: 'PMD: Blue Rescue',  path: '/Pokemon Mystery Dungeon - Blue Rescue Team (USA).nds', kind: 'retail', hint: '🟡' },
+  { label: 'Ben 10 Triple',     path: '/Ben 10 Triple Pack (USA) (En,Fr,De,Es,It).nds',     kind: 'retail', hint: '🟡' },
+  { label: 'NFS ProStreet',     path: '/Need for Speed - ProStreet (USA) (En,Fr,De,Es,It) (Rev 1).nds', kind: 'retail', hint: '🟡' },
+  { label: 'Dogz',              path: '/Dogz (USA).nds',                                    kind: 'retail', hint: '🟡' },
   // Retail — stalls or panics very early
   { label: 'Meteos',            path: '/Meteos.nds',                                       kind: 'retail', hint: '🔴' },
   { label: 'Plants vs Zombies', path: '/Plants vs. Zombies (USA).nds',                     kind: 'retail', hint: '🔴' },
