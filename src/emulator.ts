@@ -21,6 +21,7 @@ import { Dma } from './io/dma';
 import { DsMath } from './io/ds_math';
 import { Spi } from './io/spi';
 import { Timers } from './io/timers';
+import { Wifi } from './io/wifi';
 import { Ppu, DOTS_PER_LINE, LINES_PER_FRAME } from './ppu/ppu';
 import { BiosHle } from './bios/hle';
 import { installBiosStubs } from './bios/stub';
@@ -42,6 +43,7 @@ export class Emulator {
   dma7: Dma;
   math = new DsMath();      // ARM9 only — ARM7 sees these registers as 0
   spi = new Spi();          // ARM7 only — ARM9 sees SPI registers as 0
+  wifi = new Wifi();        // ARM7 only — WiFi MMIO at 0x04800000-0x04807FFF
   timers9: Timers;          // 4 timers per CPU
   timers7: Timers;
   io9: IoBus;
@@ -80,6 +82,7 @@ export class Emulator {
     this.io7.timers = this.timers7;
     this.bus9.attachIo(this.io9);
     this.bus7.attachIo(this.io7);
+    this.bus7.attachWifi(this.wifi);
     this.cpu9 = new Cpu(this.bus9, true);
     this.cpu7 = new Cpu(this.bus7, false);
     // BIOS stub bytes first — Cp15's constructor patches the IRQ handler

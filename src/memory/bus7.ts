@@ -10,17 +10,28 @@ import {
 } from './regions';
 import type { IoBus } from '../io/io';
 import type { VramRouter } from './vram_router';
+import type { Wifi } from '../io/wifi';
+import { WIFI_BASE, WIFI_END } from '../io/wifi';
 
 export class Bus7 {
   mem: SharedMemory;
   io: IoBus | null = null;
   vram: VramRouter | null = null;
+  wifi: Wifi | null = null;
 
   constructor(mem: SharedMemory) {
     this.mem = mem;
   }
 
   attachIo(io: IoBus): void { this.io = io; }
+  attachWifi(wifi: Wifi): void { this.wifi = wifi; }
+  // WiFi MMIO lives at 0x04800000-0x04807FFF, inside the larger IO
+  // window (0x04xxxxxx). Detect it BEFORE the general IO dispatch so
+  // the Wifi stub can shape the response — otherwise IoBus returns 0
+  // for these unrelated addresses and games hang polling readiness.
+  private isWifi(addr: number): boolean {
+    return addr >= WIFI_BASE && addr < WIFI_END;
+  }
   private isIo(addr: number): boolean { return (addr >>> 24) === 0x04; }
 
   private resolve(addr: number): { arr: Uint8Array; idx: number } | null {
@@ -59,12 +70,14 @@ export class Bus7 {
   }
 
   read8(addr: number): number {
+    if (this.wifi && this.isWifi(addr)) return this.wifi.read8(addr);
     if (this.isIo(addr)) return this.io ? this.io.read8(addr) : 0;
     const r = this.resolve(addr);
     return r ? r.arr[r.idx] : 0;
   }
 
   read16(addr: number): number {
+    if (this.wifi && this.isWifi(addr)) return this.wifi.read16(addr);
     if (this.isIo(addr)) return this.io ? this.io.read16(addr) : 0;
     const r = this.resolve(addr);
     if (!r) return 0;
@@ -72,6 +85,7 @@ export class Bus7 {
   }
 
   read32(addr: number): number {
+    if (this.wifi && this.isWifi(addr)) return this.wifi.read32(addr);
     if (this.isIo(addr)) return this.io ? this.io.read32(addr) : 0;
     const r = this.resolve(addr);
     if (!r) return 0;
@@ -80,12 +94,14 @@ export class Bus7 {
   }
 
   write8(addr: number, v: number): void {
+    if (this.wifi && this.isWifi(addr)) { this.wifi.write8(addr, v); return; }
     if (this.isIo(addr)) { this.io?.write8(addr, v); return; }
     const r = this.resolve(addr);
     if (r) r.arr[r.idx] = v & 0xFF;
   }
 
   write16(addr: number, v: number): void {
+    if (this.wifi && this.isWifi(addr)) { this.wifi.write16(addr, v); return; }
     if (this.isIo(addr)) { this.io?.write16(addr, v); return; }
     const r = this.resolve(addr);
     if (!r) return;
@@ -94,6 +110,7 @@ export class Bus7 {
   }
 
   write32(addr: number, v: number): void {
+    if (this.wifi && this.isWifi(addr)) { this.wifi.write32(addr, v); return; }
     if (this.isIo(addr)) { this.io?.write32(addr, v); return; }
     // Nintendo SDK shared-OS-init-flags word at 0x027FFF8C. Real DS BIOS
     // sets some of these bits during the boot stub that runs before
