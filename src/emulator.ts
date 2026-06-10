@@ -11,6 +11,7 @@ import { loadNdsRom, type LoadResult } from './cart/loader';
 import { parseNdsHeader, type NdsHeader } from './cart/header';
 import { Cart } from './cart/cart';
 import { loadAllOverlays, type OverlayLoadStats } from './cart/overlays';
+import { tryHandleNsmbFsThunk, NSMB_FS_THUNK_ADDR } from './cart/nsmb_fs_assist';
 import { Cpu } from './cpu/cpu';
 import { Cp15 } from './cpu/cp15';
 import { Irq } from './io/irq';
@@ -152,6 +153,24 @@ export class Emulator {
         // runs — otherwise stepping is skipped and the CPU never re-
         // evaluates wake. We let step() handle the halt-wake itself.
         if (!(cpu9.state.halted && !cpu9.wakeLine)) {
+          // NSMB NitroFS assist. The PPU's VBlank hook (applyNsmbFsThunk)
+          // patches every FS handle's +0x50 vtable slot to point at our
+          // shared "MOV R0,#6 ; BX LR" thunk at 0x023FF800 — but the SDK
+          // dispatcher's callback isn't just supposed to return 6, it's
+          // supposed to copy the requested bytes from cart ROM to the dst
+          // buffer in main RAM. The inline ARM bytes can't do that (cart
+          // ROM isn't memory-mapped on ARM9). So BEFORE letting the CPU
+          // execute the next instruction at the thunk address, we copy
+          // the bytes in JS and BX-LR back ourselves. The inline ARM
+          // body (still parked in main RAM) is the synchronous
+          // fallback — exercised by direct-Cpu.step tests and as a
+          // backstop if the assist ever no-ops a call.
+          if ((cpu9.state.r[15] & ~3) === NSMB_FS_THUNK_ADDR) {
+            tryHandleNsmbFsThunk(cpu9, {
+              rom: this.cart.rom,
+              mainRam: this.mem.mainRam,
+            });
+          }
           cpu9.step();
           arm9Steps++;
         }
