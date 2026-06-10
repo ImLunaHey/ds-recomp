@@ -419,19 +419,9 @@ export function PlayerPage() {
     };
   }, [emu, src]);
 
-  const loadBuiltin = useCallback(async (path: string) => {
-    setRunning(false);
-    try {
-      const res = await fetch(path);
-      if (!res.ok) throw new Error(`fetch ${path} → ${res.status}`);
-      const buf = new Uint8Array(await res.arrayBuffer());
-      loadFromBytes(buf, path);
-      try { window.localStorage?.setItem(STORAGE_KEY_ROM, path); } catch { /* ignore quota */ }
-      setRunning(true);    // autoplay
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
-  }, [loadFromBytes]);
+  // (loadBuiltin used to back the on-page ROM picker buttons. The
+  // LibraryPage now owns that UI; the player route loads from URL
+  // slug instead. Drop helper removed.)
 
   // Initial fetch of the most-recently-used built-in ROM (or default).
   useEffect(() => {
