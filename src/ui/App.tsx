@@ -95,16 +95,27 @@ function ControlPad({
 // no visible content, "🔴" = stalls or panics very early. Hints are
 // best-effort snapshots and will drift as fixes land.
 const BUILTIN_ROMS = [
-  // Retail
+  // Retail — visible content rendering
   { label: 'Super Mario 64 DS', path: '/Super Mario 64 DS.nds',                            kind: 'retail', hint: '🟢' },
   { label: 'Brain Training',    path: '/Brain Training.nds',                               kind: 'retail', hint: '🟢' },
+  { label: 'Cooking Mama',      path: '/Cooking Mama (USA).nds',                           kind: 'retail', hint: '🟢' },
+  // Retail — boots past SDK init, no visible content yet
   { label: 'LEGO Star Wars',    path: '/LEGO Star Wars - The Complete Saga (USA).nds',     kind: 'retail', hint: '🟡' },
   { label: 'Pokemon Platinum',  path: '/Pokemon - Platinum Version (USA) (Rev 1).nds',     kind: 'retail', hint: '🟡' },
   { label: 'Pokemon HeartGold', path: '/Pokemon - HeartGold Version (USA).nds',            kind: 'retail', hint: '🟡' },
   { label: 'NSMB',              path: '/New Super Mario Bros.nds',                         kind: 'retail', hint: '🟡' },
   { label: 'Nintendogs',        path: '/Nintendogs - Labrador.nds',                        kind: 'retail', hint: '🟡' },
   { label: 'Tetris DS',         path: '/Tetris DS.nds',                                    kind: 'retail', hint: '🟡' },
+  { label: 'Cars',              path: '/Cars (USA).nds',                                   kind: 'retail', hint: '🟡' },
+  { label: 'Spirit Tracks',     path: '/Legend of Zelda, The - Spirit Tracks (USA) (En,Fr,Es) (Rev 1).nds', kind: 'retail', hint: '🟡' },
+  { label: 'Simpsons Game',     path: '/Simpsons Game, The (USA).nds',                     kind: 'retail', hint: '🟡' },
+  { label: 'Sonic Rush Adv.',   path: '/Sonic Rush Adventure (USA) (En,Ja,Fr,De,Es,It).nds', kind: 'retail', hint: '🟡' },
+  { label: 'Toy Story 3',       path: '/Toy Story 3 (USA) (En,Fr,Es) (NDSi Enhanced).nds', kind: 'retail', hint: '🟡' },
+  // Retail — stalls or panics very early
   { label: 'Meteos',            path: '/Meteos.nds',                                       kind: 'retail', hint: '🔴' },
+  { label: 'Plants vs Zombies', path: '/Plants vs. Zombies (USA).nds',                     kind: 'retail', hint: '🔴' },
+  { label: 'Pokemon Pearl',     path: '/Pokemon - Pearl Version (USA) (Rev 5).nds',        kind: 'retail', hint: '🔴' },
+  { label: 'Sims 3 (DSi)',      path: '/Sims 3, The (USA) (En,Fr,Es) (NDSi Enhanced).nds', kind: 'retail', hint: '🔴' },
   // Homebrew / PPU regression tests
   { label: 'RockWrestler',      path: '/rockwrestler.nds',                                 kind: 'test',   hint: '' },
   { label: 'obj mosaic',        path: '/test_obj_mosaic.nds',                              kind: 'test',   hint: '' },
