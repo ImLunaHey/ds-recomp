@@ -28,7 +28,7 @@ export class Cp15 {
   // The BIOS IRQ stub at 0x18 reads a literal at offset 0x34 holding
   // the ADDRESS of the user IRQ handler ptr. DS games store that ptr at
   // DTCM_END - 4, so the literal must move whenever CP15 relocates DTCM.
-  private updateIrqHandlerPtrLiteral(): void {
+  updateIrqHandlerPtrLiteral(): void {
     const dtcmEnd = (this.bus9.dtcmBase + this.bus9.dtcmVirtualSize) >>> 0;
     const ptrAddr = (dtcmEnd - 4) >>> 0;
     const bios = this.mem.biosArm9;

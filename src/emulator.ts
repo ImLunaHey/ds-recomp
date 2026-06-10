@@ -174,10 +174,14 @@ export class Emulator {
     // WiFi
     this.wifi.io.fill(0);
     this.wifi.powerState = 0;
-    // CPU state — re-install BIOS stubs so the IRQ handler pointer
-    // literal at 0x00000000 is fresh after the DTCM-aware patching done
-    // by Cp15.
+    // CPU state — re-install BIOS stubs (overwrites stale patches from
+    // the previous game), then re-trigger CP15's IRQ-handler-pointer
+    // literal patch so the freshly-installed stub at 0x18 references
+    // the correct DTCM_END - 4 location. Without this, Simpsons / NSMB
+    // / Tetris / Nintendogs regressed to no-render after the reset
+    // wiped CP15's earlier patch.
     installBiosStubs(this.mem);
+    this.cpu9.cp15.updateIrqHandlerPtrLiteral();
     this.totalDots = 0;
   }
 
