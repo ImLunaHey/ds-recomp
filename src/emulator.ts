@@ -25,6 +25,7 @@ import { Wifi } from './io/wifi';
 import { Ppu, DOTS_PER_LINE, LINES_PER_FRAME } from './ppu/ppu';
 import { BiosHle } from './bios/hle';
 import { installBiosStubs } from './bios/stub';
+import { NitroOsAssist } from './bios/nitro_os';
 
 const DOT_CYCLES_PER_FRAME = DOTS_PER_LINE * LINES_PER_FRAME;
 const ARM9_STEPS_PER_DOT = 2;
@@ -52,6 +53,12 @@ export class Emulator {
   cpu7: Cpu;
   bios9: BiosHle;
   bios7: BiosHle;
+  // NitroSDK OS-thread deadlock assist. Default-on — kicks in only after
+  // 60 consecutive frames of WFI halt with no other wake source, so it
+  // stays silent for working games. Tests / UI can disable by setting
+  // nitroOsAssist = false.
+  nitroOs: NitroOsAssist;
+  nitroOsAssist = true;
   header: NdsHeader | null = null;
   load: LoadResult | null = null;
   overlays: OverlayLoadStats | null = null;
@@ -101,6 +108,7 @@ export class Emulator {
     this.cpu7.bios = this.bios7;
     this.io9.bios = this.bios9;
     this.io7.bios = this.bios7;
+    this.nitroOs = new NitroOsAssist(this);
   }
 
   // Wipe all volatile state — main RAM, VRAM, PRAM, OAM, IRQ controllers,
@@ -290,6 +298,12 @@ export class Emulator {
       if (ppu.frameDone) { ppu.frameDone = false; break; }
     }
     this.totalDots += dotsThisFrame;
+    // NitroSDK OS-thread deadlock assist. Run AFTER CPU stepping so
+    // we observe the post-frame halt/PC state — if ARM9 has been
+    // parked in WFI long enough with nothing else due to wake it,
+    // synthesize an OS_Thread wakeup to unblock the game. No-ops on
+    // working games (see src/bios/nitro_os.ts for the heuristic).
+    if (this.nitroOsAssist) this.nitroOs.tick(ppu.frameCount);
     return { arm9: arm9Steps, arm7: arm7Steps, frame: ppu.frameCount };
   }
 
