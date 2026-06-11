@@ -315,6 +315,101 @@ function injectGxDemo(emu: Emulator): void {
   emu.mem.pram[0] = 0; emu.mem.pram[1] = 0;
 }
 
+// Build a JSON snapshot of the live PPU + VRAM-banking + CPU state +
+// IPC + DMA + display registers, then download it to the user's disk.
+// Filed into bug reports by the user when a render bug only reproduces
+// in a specific live state (touch input, post-menu navigation, etc.)
+// that headless tests can't drive to. The file is hex-encoded so
+// downstream investigation agents don't have to fight base64 framing.
+function downloadDebugSnapshot(emu: Emulator, src: string): void {
+  const hex = (n: number) => '0x' + ((n >>> 0).toString(16).padStart(8, '0'));
+  // Capture distinct framebuffer colors so the snapshot includes a
+  // colorhash without dragging the full RGBA buffer along.
+  const sigA = new Set<string>(), sigB = new Set<string>();
+  for (let i = 0; i < 256 * 192 * 4; i += 4) {
+    sigA.add(`${emu.ppu.fbA[i]},${emu.ppu.fbA[i+1]},${emu.ppu.fbA[i+2]}`);
+    sigB.add(`${emu.ppu.fbB[i]},${emu.ppu.fbB[i+1]},${emu.ppu.fbB[i+2]}`);
+  }
+  const snap = {
+    rom: src,
+    timestamp: Date.now(),
+    frame: emu.ppu.frameCount,
+    cpu9: {
+      pc: hex(emu.cpu9.state.r[15]),
+      cpsr: hex(emu.cpu9.state.cpsr),
+      halted: emu.cpu9.state.halted,
+      r: Array.from(emu.cpu9.state.r).map(hex),
+    },
+    cpu7: {
+      pc: hex(emu.cpu7.state.r[15]),
+      cpsr: hex(emu.cpu7.state.cpsr),
+      halted: emu.cpu7.state.halted,
+      r: Array.from(emu.cpu7.state.r).map(hex),
+    },
+    irq9: { ie: hex(emu.irq9.ie), if_: hex(emu.irq9.if_), ime: emu.irq9.ime },
+    irq7: { ie: hex(emu.irq7.ie), if_: hex(emu.irq7.if_), ime: emu.irq7.ime },
+    ppu: {
+      dispcntA: hex(emu.ppu.dispcntA),
+      dispcntB: hex(emu.ppu.dispcntB),
+      dispstat: hex(emu.ppu.dispstat),
+      vcount: emu.ppu.vcount,
+      bgCntA: Array.from(emu.ppu.bgCntA).map((v) => '0x' + v.toString(16).padStart(4, '0')),
+      bgCntB: Array.from(emu.ppu.bgCntB).map((v) => '0x' + v.toString(16).padStart(4, '0')),
+      bgHofsA: Array.from(emu.ppu.bgHofsA),
+      bgVofsA: Array.from(emu.ppu.bgVofsA),
+      bgHofsB: Array.from(emu.ppu.bgHofsB),
+      bgVofsB: Array.from(emu.ppu.bgVofsB),
+      vramcnt: Array.from(emu.ppu.vramcnt).map((v) => '0x' + v.toString(16).padStart(2, '0')),
+      bldCntA: hex(emu.ppu.bldCntA),
+      bldCntB: hex(emu.ppu.bldCntB),
+      masterBrightA: hex(emu.ppu.masterBrightA),
+      masterBrightB: hex(emu.ppu.masterBrightB),
+    },
+    io: {
+      powcnt1: hex(emu.io9.powcnt1),
+      keyinput: hex(emu.io9.keyinput),
+      postflg: emu.io9.postflg,
+    },
+    ipc: {
+      q9to7Size: emu.ipc.q9to7.size,
+      q7to9Size: emu.ipc.q7to9.size,
+      sync9Out: emu.ipc.sync9Out,
+      sync7Out: emu.ipc.sync7Out,
+      enable9: emu.ipc.enable9,
+      enable7: emu.ipc.enable7,
+    },
+    dma9: emu.dma9.channels.map((c) => ({
+      enabled: c.enabled, src: hex(c.src), dst: hex(c.dst),
+      countCtrl: hex(c.countCtrl), timing: c.timing, repeat: c.repeat,
+    })),
+    dma7: emu.dma7.channels.map((c) => ({
+      enabled: c.enabled, src: hex(c.src), dst: hex(c.dst),
+      countCtrl: hex(c.countCtrl), timing: c.timing, repeat: c.repeat,
+    })),
+    sound: emu.io7.sound.channels.map((c, i) => ({
+      i, keyOn: (c.cnt >>> 31) === 1, fmt: ['PCM8','PCM16','ADPCM','PSG'][(c.cnt >> 29) & 3],
+      vol: c.cnt & 0x7F, sad: hex(c.sad), tmr: c.tmr, len: c.len,
+    })).filter((c) => c.keyOn),
+    soundcnt: hex(emu.io7.sound.soundcnt),
+    fbColors: { fbA: sigA.size, fbB: sigB.size },
+    jit: emu.cpu9.recomp ? {
+      enabled: emu.cpu9.recomp.enabled,
+      cacheBlocks: emu.cpu9.recomp.cache.size,
+      jitInsns: emu.cpu9.recomp.jitInsns,
+      intInsns: emu.cpu9.recomp.intInsns,
+    } : null,
+  };
+  const blob = new Blob([JSON.stringify(snap, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const safe = src.replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 40);
+  a.href = url;
+  a.download = `ds-recomp-snapshot-${safe}-f${emu.ppu.frameCount}-${stamp}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 export function PlayerPage() {
   const emu = useEmu();
   // URL param drives which ROM we load. If the slug isn't registered
@@ -681,6 +776,13 @@ export function PlayerPage() {
             }}
           >
             ⚡ JIT {jitOn ? 'on' : 'off'}
+          </button>
+          <button
+            className="px-4 py-2 rounded bg-sky-700 hover:bg-sky-600 text-white text-sm border border-sky-500"
+            title="Download a JSON snapshot of PPU + VRAM-banking + BG control + DMA + IPC + CPU state. Useful when a render bug only reproduces in a specific live game state — paste the snapshot into a bug report or hand it to an investigation agent."
+            onClick={() => downloadDebugSnapshot(emu, src)}
+          >
+            📸 Snapshot
           </button>
           <button
             className="px-4 py-2 rounded bg-indigo-700 hover:bg-indigo-600 text-white text-sm border border-indigo-500"

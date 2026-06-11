@@ -117,7 +117,7 @@ export const ROM_LIBRARY: RomMeta[] = [
     blurb: '170-color title-screen render after affine BG support landed.',
     issues: [
       'Cannot advance past the title screen yet — touch/button gate.',
-      'In the team-roster menu, list-item text shows garbled characters ("ðG-é DMâ" pattern) while the section header reads correctly — likely wrong BG ext-palette slot for the list panel.',
+      'In the team-roster menu, list-item text shows garbled characters ("ðG-é DMâ" pattern) while the section header reads correctly. Investigation deferred: headless tests can\'t drive the SDK touch driver to reach the menu, so the broken state\'s VRAMCNT/DISPCNT/BGCNT bytes haven\'t been captured. Use the 📸 Snapshot button on the player when the bug is visible to grab a JSON dump for follow-up.',
     ],
   },
   {
