@@ -134,14 +134,16 @@ export class VramRouter {
       }
       return -1;
     }
-    // Sub-OBJ window 0x06600000..0x0667FFFF (engine B OBJ, 512 KB).
-    // Banks that can map here: D MST=5 (128 KB), I MST=2 (16 KB).
-    // Brain Training has VRAMCNT_D=0x84 (sub-BG) and VRAMCNT_I=0x83
-    // (sub-OBJ ext pal), so its writes to 0x06600000 hit no bank
-    // here — same as real DS. This handler is correct for games
-    // that DO set MST=5 on bank D for sub-OBJ.
+    // Sub-OBJ window 0x06600000..0x0667FFFF (engine B OBJ, 128 KB).
+    // Per GBATEK §"VRAM Banks":
+    //   Bank D MST=4 → Engine B OBJ (128 KB at 0x06600000)
+    //   Bank I MST=2 → Engine B OBJ (16 KB at 0x06600000)
+    // The previous handler matched bank D's MST=5 which doesn't exist
+    // — Brain Training's language-select shows sprites only on Engine
+    // B with VRAMCNT_D=0x84 (= MST=4), and got a solid-white bottom
+    // screen because no bank was reachable for OBJ tile data.
     if (addr >= 0x06600000 && addr < 0x06680000) {
-      if ((this.vramcnt[3] & 0x87) === 0x85 && addr < 0x06620000) {
+      if ((this.vramcnt[3] & 0x87) === 0x84 && addr < 0x06620000) {
         return BANK_INFO[3].start + (addr - 0x06600000);
       }
       if ((this.vramcnt[8] & 0x87) === 0x82 && addr < 0x06604000) {

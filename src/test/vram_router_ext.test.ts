@@ -78,9 +78,14 @@ describe('VramRouter — LCDC alias', () => {
 });
 
 describe('VramRouter — sub-OBJ window 0x06600000+', () => {
-  it('bank D MST=5 maps to 0x06600000+ (sub-OBJ, 128 KB)', () => {
+  it('bank D MST=4 maps to 0x06600000+ (sub-OBJ, 128 KB)', () => {
+    // Per GBATEK §"VRAM Banks": bank D MST=4 is Engine B OBJ. The
+    // previous implementation looked for MST=5 (which does not
+    // exist on bank D) and silently failed for every game whose
+    // language-select / menu used Engine B sprites — Brain Training
+    // is the canonical case (white bottom screen).
     const { vramcnt, router } = makeRouter();
-    vramcnt[3] = 0x85;        // enable + MST=5
+    vramcnt[3] = 0x84;        // enable + MST=4
     expect(router.resolveArm9(0x06600000)).toBe(0x60000);
     expect(router.resolveArm9(0x0660FFFF)).toBe(0x6FFFF);
     // Just past D's 128 KB extent: no bank covers it.
