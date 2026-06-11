@@ -6,13 +6,13 @@ No prebuilt BIOS, no off-the-shelf cores — the whole stack is TypeScript with 
 
 ## Status
 
-9 retail ROMs render visible content (🟢), 6 boot past SDK init but render is partial (🟡), 20 stall early (🔴). Status is best-effort and measured by running each ROM for 1800 frames (30 sec game time) and sampling distinct framebuffer colors at 5 timestamps.
+12 retail ROMs render visible content (🟢), 6 boot past SDK init but render is partial (🟡), 17 stall early (🔴). Status is best-effort and measured by running each ROM for 1800 frames (30 sec game time) and sampling distinct framebuffer colors at 5 timestamps.
 
 | Tier | ROM examples |
 |---|---|
-| 🟢 Visible content | Super Mario 64 DS · Brain Training · Cooking Mama · The Simpsons Game · Age of Empires: Mythologies · Spider-Man: Edge of Time · Tony Hawk's Proving Ground · PMD: Blue Rescue Team · Nintendo DS Browser |
+| 🟢 Visible content | Super Mario 64 DS · Brain Training · Cooking Mama · The Simpsons Game · Age of Empires: Mythologies · Spider-Man: Edge of Time · Tony Hawk's Proving Ground · PMD: Blue Rescue Team · Nintendo DS Browser · **LEGO Battles: Ninjago** · **Nintendogs - Labrador** · **The Sims 3** |
 | 🟡 Partial render | LEGO Star Wars · LEGO Indiana Jones · NFS ProStreet · Cars · Skate It · Sonic Rush Adventure |
-| 🔴 Stalls early | New Super Mario Bros. · Tetris DS · Nintendogs · Pokemon Platinum / HG / Pearl / Diamond · Meteos · Apollo Justice · Zelda: Spirit Tracks · GTA Chinatown Wars · LEGO Battles · SpongeBob · Plants vs. Zombies · others |
+| 🔴 Stalls early | New Super Mario Bros. · Tetris DS · Pokemon Platinum / HG / Pearl / Diamond · Meteos · Apollo Justice · Zelda: Spirit Tracks · GTA Chinatown Wars · SpongeBob · Plants vs. Zombies · others |
 | 🧪 PPU regression tests | RockWrestler homebrew + targeted OBJ mosaic / OBJ priority / OBJ mosaic-fuzz ROMs |
 
 DSi-Enhanced titles (Art Academy, Sims 3, Toy Story 3) don't run — DSi-specific hardware is not modelled.

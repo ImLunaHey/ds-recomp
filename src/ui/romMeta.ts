@@ -221,10 +221,9 @@ export const ROM_LIBRARY: RomMeta[] = [
     path: '/Nintendogs - Labrador.nds',
     label: 'Nintendogs - Labrador',
     kind: 'retail',
-    tier: '🔴',
-    blurb: '104K VRAM loaded; SDK init advanced past the original PXI deadlock.',
+    tier: '🟢',
+    blurb: '104K VRAM loaded; renders 14-15 distinct colours on both screens after the NitroOS assist landed.',
     issues: [
-      'Reaches deeper SDK boot but no visible display state.',
       'Requires microphone for "name your puppy" voice training (we do not model the mic).',
     ],
   },
@@ -340,9 +339,12 @@ export const ROM_LIBRARY: RomMeta[] = [
     path: '/Sims 3, The (USA) (En,Fr,Es) (NDSi Enhanced).nds',
     label: 'The Sims 3 (DSi)',
     kind: 'retail',
-    tier: '🔴',
-    blurb: 'NDSi Enhanced — not modeled.',
-    issues: ['Game requires DSi-specific features.'],
+    tier: '🟢',
+    blurb: 'NDSi Enhanced — bottom-screen pre-intro renders despite us not modelling DSi-specific hardware.',
+    issues: [
+      'Game requires DSi-specific features for in-game content.',
+      'Will likely stall once the boot path hits a DSi-only register.',
+    ],
   },
   {
     path: '/Art Academy (USA) (NDSi Enhanced).nds',
@@ -372,9 +374,9 @@ export const ROM_LIBRARY: RomMeta[] = [
     path: '/LEGO Battles - Ninjago (USA) (En,Fr,Es).nds',
     label: 'LEGO Battles: Ninjago',
     kind: 'retail',
-    tier: '🔴',
-    blurb: 'Same SDK family as other LEGO games.',
-    issues: ['Stalls before LEGO Star Wars-style render phase.'],
+    tier: '🟢',
+    blurb: '253 distinct colours on the top screen after the VBlank tick-counter assist — the game was busy-spinning on the SDK tick at 0x02FFFF8C waiting for the counter to advance.',
+    issues: [],
   },
 
   // ──────────────────── 🧪 PPU regression tests / homebrew ────────────────────
