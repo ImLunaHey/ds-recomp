@@ -218,6 +218,32 @@ export class Emulator {
     for (let i = 0; i < 0x70; i++) {
       this.mem.mainRam[ramUserStart + i] = this.spi.firmware[fwUserStart + i] ?? 0;
     }
+    // Extra OS shared-work fields that need the firmware blob. guac
+    // (github.com/aabalke/guac, emu/nds/mem/init.go) sets the same
+    // three WiFi-FLASH-header fields plus the Frame Counter at boot;
+    // some early-SDK games like Brain Training read these during init
+    // and never advance past their language-select screen if they're
+    // all zero.
+    const writeRam = (addr: number, v: number, bits: 8 | 16 | 32): void => {
+      const off = addr & MAIN_RAM_MASK;
+      this.mem.mainRam[off] = v & 0xFF;
+      if (bits >= 16) this.mem.mainRam[off + 1] = (v >>> 8) & 0xFF;
+      if (bits >= 32) {
+        this.mem.mainRam[off + 2] = (v >>> 16) & 0xFF;
+        this.mem.mainRam[off + 3] = (v >>> 24) & 0xFF;
+      }
+    };
+    // WiFi FLASH User Settings address = firmware[0x20] * 8.
+    writeRam(0x027FF868, (this.spi.firmware[0x20] ?? 0) * 8, 32);
+    // WiFi FLASH firmware part5 CRC16 = firmware[0x26] halfword.
+    const wifiCrc5 = (this.spi.firmware[0x26] ?? 0) | ((this.spi.firmware[0x27] ?? 0) << 8);
+    writeRam(0x027FF874, wifiCrc5, 16);
+    // WiFi FLASH firmware part3/4 CRC16 = 0 (guac sets it to zero;
+    // GBATEK says "usually zero").
+    writeRam(0x027FF876, 0, 16);
+    // Frame Counter — well-known BIOS-post-boot value used by some
+    // early-SDK games as a "BIOS has finished" sanity check.
+    writeRam(0x027FFC3C, 0x00000332, 32);
     this.resetCpus();
   }
 

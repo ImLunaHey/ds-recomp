@@ -95,6 +95,13 @@ export function loadNdsRom(
   w16(0x027FF80A, cartSecCrc);        // Cart Secure Area CRC
   w16(0x027FF810, 0xFFFF);            // Boot handler task (=FFFFh at cart boot)
   w16(0x027FF850, 0x5835);            // NDS7 BIOS CRC (well-known constant)
+  // NOTE: 0x027FF868 / 0x027FF874 / 0x027FF876 (WiFi FLASH header
+  // fields sourced from firmware[0x20], [0x26], etc.) and 0x027FFC3C
+  // (Frame Counter = 0x332) are populated in Emulator.loadRom() —
+  // they need the SPI firmware blob which lives outside this module.
+  // guac sets all of these at boot too (see emu/nds/mem/init.go); some
+  // early-SDK games (Brain Training in particular) read those fields
+  // during their SDK init and stay parked if they read as zero.
   w32(0x027FF880, 7);                 // Message NDS9→NDS7 (=7 at cart boot)
   w32(0x027FF884, 6);                 // NDS7 Boot Task (=6 at cart boot)
 
