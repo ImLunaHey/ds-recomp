@@ -970,6 +970,12 @@ export function PlayerPage() {
               you see motion even when paused. */}
           <DebugLog emu={emu} />
 
+          {/* Touch demo — click the scratchpad to inject touch events
+              directly without needing a ROM. Shows the live state of
+              every link in the chain so you can verify your taps are
+              reaching the emulator. */}
+          <div className="mt-3"><TouchDemo emu={emu} /></div>
+
           {emu.header && (
             <div className="grid grid-cols-1 gap-3 mt-3">
               <LivePcDisasm emu={emu} />
@@ -1090,6 +1096,97 @@ function DebugLog({ emu }: { emu: Emulator }) {
               {dmaLines.length > 4 && <div className="text-zinc-500">…+{dmaLines.length - 4} more</div>}
             </div>
           )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// Live touch demo — shows the touch chain in real time so you can
+// verify the emulator is receiving your clicks. Reads the raw spi
+// state, the EXTKEYIN pen-down bit, and the 8 bytes of the OS shared-
+// work struct at 0x027FFFA8 (where touch_driver writes the cooked
+// sample every VBlank). Plus a 80×60 px touchpad you can click to
+// inject test events directly without needing a ROM that polls.
+function TouchDemo({ emu }: { emu: Emulator }) {
+  const [, setT] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setT((v) => v + 1), 100);   // 10 Hz refresh
+    return () => clearInterval(id);
+  }, []);
+  const spi = emu.spi;
+  const ext = emu.io7.read8(0x04000136);
+  const penDown = !((ext >> 6) & 1);
+  // Read the 8 OS-shared-work touch struct bytes.
+  const off = (0x027FFFA8 - 0x02000000) & 0x3FFFFF;
+  const struct: number[] = [];
+  for (let i = 0; i < 8; i++) struct.push(emu.mem.mainRam[off + i]);
+  const hex2 = (n: number) => (n & 0xFF).toString(16).padStart(2, '0');
+  // Embedded touchpad (80 × 60 px → 256 × 192 screen coords).
+  const pad = useRef<HTMLDivElement | null>(null);
+  const inject = (e: React.PointerEvent) => {
+    if (!pad.current) return;
+    const r = pad.current.getBoundingClientRect();
+    const x = Math.max(0, Math.min(255, Math.floor((e.clientX - r.left) * 256 / r.width)));
+    const y = Math.max(0, Math.min(191, Math.floor((e.clientY - r.top) * 192 / r.height)));
+    if (e.type === 'pointerdown' || e.type === 'pointermove') {
+      if (e.type === 'pointermove' && (e.buttons & 1) === 0) return;
+      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+      emu.spi.touchX = x; emu.spi.touchY = y; emu.spi.touchZ = 0x800;
+    } else {
+      emu.spi.touchX = null; emu.spi.touchY = null; emu.spi.touchZ = 0;
+    }
+  };
+  return (
+    <section className="border border-zinc-800 rounded-lg bg-zinc-900/60 p-3 font-mono text-[10px] text-zinc-300">
+      <div className="text-xs font-semibold text-zinc-200 mb-2">Touch demo</div>
+      <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-3 items-start">
+        <div className="space-y-1">
+          <div>
+            <span className="text-zinc-500">spi:</span>{' '}
+            X={spi.touchX === null ? 'null' : spi.touchX}{' '}
+            Y={spi.touchY === null ? 'null' : spi.touchY}{' '}
+            Z=0x{spi.touchZ.toString(16)}
+          </div>
+          <div>
+            <span className="text-zinc-500">ARM7 EXTKEYIN:</span>{' '}
+            0x{hex2(ext)}{' '}
+            {penDown
+              ? <span className="text-emerald-400">pen DOWN</span>
+              : <span className="text-zinc-500">released</span>}
+          </div>
+          <div>
+            <span className="text-zinc-500">struct @ 0x027FFFA8:</span>{' '}
+            <span className="text-zinc-200">
+              [{struct.map(hex2).join(' ')}]
+            </span>
+          </div>
+          <div className="text-zinc-500 text-[9px] mt-1">
+            +0 pressed · +1 X(SDK-1.x) · +2..3 X(u16) · +4..5 Y(u16) · +6 frame
+          </div>
+        </div>
+        <div className="flex flex-col items-center gap-1">
+          <div
+            ref={pad}
+            onPointerDown={inject}
+            onPointerMove={inject}
+            onPointerUp={inject}
+            onPointerCancel={inject}
+            onContextMenu={(e) => e.preventDefault()}
+            className="w-[80px] h-[60px] rounded border border-zinc-600 bg-zinc-800 hover:border-emerald-500 cursor-crosshair touch-none select-none relative"
+            title="Click / drag here to inject a touch — no ROM required"
+          >
+            {penDown && spi.touchX !== null && spi.touchY !== null && (
+              <span
+                className="absolute w-1.5 h-1.5 rounded-full bg-emerald-400 -translate-x-1/2 -translate-y-1/2"
+                style={{
+                  left: `${(spi.touchX / 255) * 100}%`,
+                  top:  `${(spi.touchY / 191) * 100}%`,
+                }}
+              />
+            )}
+          </div>
+          <div className="text-zinc-500 text-[9px]">scratchpad</div>
         </div>
       </div>
     </section>
