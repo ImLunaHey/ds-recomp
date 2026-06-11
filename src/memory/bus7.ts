@@ -16,6 +16,11 @@ import { WIFI_BASE, WIFI_END } from '../io/wifi';
 export class Bus7 {
   mem: SharedMemory;
   io: IoBus | null = null;
+  // Brain Training HLE state. The touch_driver updates these once per
+  // VBlank so write8/write16 to 0x027FFFA8-A9 can replace ARM7's
+  // "no valid touch" byte with the live cooked screen X.
+  touchPressed = false;
+  touchScreenX = 0;
   vram: VramRouter | null = null;
   wifi: Wifi | null = null;
 
@@ -96,6 +101,15 @@ export class Bus7 {
   write8(addr: number, v: number): void {
     if (this.wifi && this.isWifi(addr)) { this.wifi.write8(addr, v); return; }
     if (this.isIo(addr)) { this.io?.write8(addr, v); return; }
+    // Brain Training (SDK 1.x) touch-struct HLE: byte +1 of the cooked
+    // touch struct at 0x027FFFA8 must carry the screen X coordinate
+    // for the game's gate to fire. ARM7's touch task writes 0x2C
+    // there every frame (= "no valid touch" marker) regardless of
+    // what our TSC2046 returns, so the writes from touch_driver get
+    // clobbered. Intercept the ARM7 byte-1 write and replace with our
+    // cooked X when touch is pressed. See touch_driver.ts for the
+    // shared-struct layout.
+    if (addr === 0x027FFFA9 && this.touchPressed) v = this.touchScreenX & 0xFF;
     const r = this.resolve(addr);
     if (r) r.arr[r.idx] = v & 0xFF;
   }
@@ -103,6 +117,12 @@ export class Bus7 {
   write16(addr: number, v: number): void {
     if (this.wifi && this.isWifi(addr)) { this.wifi.write16(addr, v); return; }
     if (this.isIo(addr)) { this.io?.write16(addr, v); return; }
+    // Same Brain Training HLE as write8 — ARM7 writes the touch
+    // struct's low halfword as 0x2C00, we override the high byte
+    // (= byte +1) with the screen X coordinate.
+    if (addr === 0x027FFFA8 && this.touchPressed) {
+      v = (v & 0x00FF) | ((this.touchScreenX & 0xFF) << 8);
+    }
     const r = this.resolve(addr);
     if (!r) return;
     r.arr[r.idx]     = v & 0xFF;

@@ -111,5 +111,11 @@ export class TouchDriver {
     // NitroSDK layout. Brain Training appears to be content with X
     // alone; Y is likely read from elsewhere or not gated on.
     bus9.write8(TOUCH_STRUCT_BASE + 0x01, sx & 0xFF);
+    // Also hand the cooked state to bus7 so ARM7's mid-frame writes of
+    // the "no valid touch" marker get rewritten with the live X. Without
+    // this, our +0x01 byte gets clobbered ~halfway through every frame.
+    // See bus7.ts write8 / write16 for the actual rewrite logic.
+    this.emu.bus7.touchPressed = pressed === 1;
+    this.emu.bus7.touchScreenX = sx & 0xFF;
   }
 }
