@@ -292,7 +292,16 @@ export class Sound {
   private decodeAdpcmSample(c: Channel, sampleIdx: number): number {
     const r0 = this.resolveSampleByte(c.sad >>> 0);
     if (!r0) return 0;
-    if (sampleIdx <= c.adpcmLastDecodedPos || c.adpcmLastDecodedPos < 0) {
+    // Re-prime when the cursor moves BACKWARDS (channel looped/seeked)
+    // or hasn't been primed yet. The `<` is important: when sampleIdx
+    // *equals* lastDecodedPos the predictor is already at the right
+    // value, and the advance loop below will run zero iterations — no
+    // re-prime needed. The old `<=` re-primed on every repeat of the
+    // same source position, which happens constantly when output rate
+    // (44.1 kHz) > source rate (typical 11-22 kHz for NDS ADPCM) and
+    // turned the decoder O(N²) per buffer. That's what caused the
+    // user-reported choppy audio.
+    if (sampleIdx < c.adpcmLastDecodedPos || c.adpcmLastDecodedPos < 0) {
       // Re-prime from the 4-byte header. Predictor is a signed 16-bit
       // value in the low halfword; step index is in the high byte, &
       // 0x7F per GBATEK (top bit is "loop info" — we ignore it here
@@ -382,11 +391,22 @@ export class Sound {
   // current source, applies vol+pan, and accumulates into the buffer.
   // Output samples are roughly in [-1, 1] after the final master-
   // volume divide; we let the AudioContext's destination clip.
+  // Re-usable output buffer so we don't churn the GC. Grown on demand
+  // when the audio bridge asks for more samples than we've allocated.
+  // Cleared per call before mixing.
+  private _mixOut: Float32Array = new Float32Array(0);
+
   mix(numSamples: number, outputRate: number): Float32Array {
-    const out = new Float32Array(numSamples * 2);
+    if (this._mixOut.length < numSamples * 2) {
+      this._mixOut = new Float32Array(numSamples * 2);
+    } else {
+      // Zero just the slice we'll use this round.
+      this._mixOut.fill(0, 0, numSamples * 2);
+    }
+    const out = this._mixOut;
     // SOUNDCNT bit 15 = master enable. When 0, hardware mutes all
     // channels; we honor that here.
-    if ((this.soundcnt & 0x8000) === 0) return out;
+    if ((this.soundcnt & 0x8000) === 0) return out.subarray(0, numSamples * 2);
     // Master vol (SOUNDCNT bits 0..6, 0..127). Dividing by NUM_CHANNELS
     // (16) was over-conservative — most channels are silent so the
     // result was barely audible. Dividing by 4 (typical active-channel
@@ -441,11 +461,14 @@ export class Sound {
     }
     // Final hard clamp to [-1, 1] so the louder master scale doesn't
     // produce out-of-range values when many channels overlap.
-    for (let n = 0; n < out.length; n++) {
+    const usedLen = numSamples * 2;
+    for (let n = 0; n < usedLen; n++) {
       const v = out[n];
       if (v >  1) out[n] =  1;
       else if (v < -1) out[n] = -1;
     }
-    return out;
+    // Return only the slice the caller asked for — the underlying
+    // _mixOut may be larger if a previous call requested more samples.
+    return out.length === numSamples * 2 ? out : out.subarray(0, numSamples * 2);
   }
 }
