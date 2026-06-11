@@ -7,3 +7,4 @@ dist/
 # ROMs are not shipped
 public/*.nds
 coverage/
+public/*.nds.save
