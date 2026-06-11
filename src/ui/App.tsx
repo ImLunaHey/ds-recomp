@@ -871,6 +871,12 @@ export function PlayerPage() {
               const y = Math.max(0, Math.min(SCREEN_H - 1, Math.floor((e.clientY - rect.top) * SCREEN_H / rect.height)));
               emu.spi.touchX = x;
               emu.spi.touchY = y;
+              // touchZ is the TSC2046 pressure reading. Games that go
+              // through the NitroSDK touch driver use Z to gate "pen
+              // down" vs hover, and our touch_driver.ts won't write
+              // `pressed=1` to the OS shared-work struct unless Z is
+              // above ~0x100. 0x800 is the typical pressed value.
+              emu.spi.touchZ = 0x800;
             }}
             onPointerMove={(e) => {
               // Drag-update only fires while a pointer button is held.
@@ -883,9 +889,10 @@ export function PlayerPage() {
               const y = Math.max(0, Math.min(SCREEN_H - 1, Math.floor((e.clientY - rect.top) * SCREEN_H / rect.height)));
               emu.spi.touchX = x;
               emu.spi.touchY = y;
+              emu.spi.touchZ = 0x800;
             }}
-            onPointerUp={() => { emu.spi.touchX = null; emu.spi.touchY = null; }}
-            onPointerCancel={() => { emu.spi.touchX = null; emu.spi.touchY = null; }}
+            onPointerUp={() => { emu.spi.touchX = null; emu.spi.touchY = null; emu.spi.touchZ = 0; }}
+            onPointerCancel={() => { emu.spi.touchX = null; emu.spi.touchY = null; emu.spi.touchZ = 0; }}
             onPointerLeave={(e) => {
               // If we lose capture (e.g. browser revokes it under specific
               // gesture conflicts), release. setPointerCapture normally
@@ -893,7 +900,7 @@ export function PlayerPage() {
               // against the edge case to avoid a "touched forever" stuck
               // state.
               if (!e.currentTarget.hasPointerCapture(e.pointerId)) {
-                emu.spi.touchX = null; emu.spi.touchY = null;
+                emu.spi.touchX = null; emu.spi.touchY = null; emu.spi.touchZ = 0;
               }
             }}
           />
