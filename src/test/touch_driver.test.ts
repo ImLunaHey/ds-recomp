@@ -101,3 +101,88 @@ describe('TouchDriver', () => {
     expect(emu.bus9.read16(TOUCH_STRUCT_BASE + TOUCH_Y_OFFSET     )).toBe(100);
   });
 });
+
+// End-to-end "did my click reach the emulator?" tests. The full chain:
+//   UI pointer event → sets spi.touchX / touchY / touchZ
+//                    → EXTKEYIN read-side returns bit 6 cleared
+//                    → TSC2046 SPI returns ADC-mapped coords
+//                    → touchDriver.tickVBlank() writes the cooked
+//                       struct to 0x027FFFA8 (both NitroSDK + SDK-1.x
+//                       byte-+1 layouts).
+// These tests pin every link of the chain so a regression at any
+// layer surfaces immediately.
+describe('Touch input — end-to-end chain from UI to the emulator', () => {
+  it('UI tap on bottom-center clears EXTKEYIN bit 6 (= pen DOWN) on ARM7 IO', () => {
+    const emu = new Emulator();
+    // EXTKEYIN lives on the ARM7 IO bus (io7). ARM9 doesn't see it
+    // per real DS, since SPI / touchscreen are ARM7-controlled.
+    expect((emu.io7.read8(0x04000136) >> 6) & 1).toBe(1);    // default: released
+    // Simulate the UI's pointer-down handler.
+    emu.spi.touchX = 128;
+    emu.spi.touchY = 96;
+    emu.spi.touchZ = 0x800;
+    expect((emu.io7.read8(0x04000136) >> 6) & 1).toBe(0);    // pressed
+    // Release.
+    emu.spi.touchX = null;
+    emu.spi.touchY = null;
+    emu.spi.touchZ = 0;
+    expect((emu.io7.read8(0x04000136) >> 6) & 1).toBe(1);    // released
+  });
+
+  it('touchDriver writes pressed + screen coords on the very next VBlank', () => {
+    const emu = new Emulator();
+    emu.spi.touchX = 100;
+    emu.spi.touchY = 80;
+    emu.spi.touchZ = 0x800;
+    emu.touchDriver.tickVBlank();
+    // NitroSDK layout
+    expect(emu.bus9.read8 (TOUCH_STRUCT_BASE + 0)).toBe(1);       // pressed
+    expect(emu.bus9.read16(TOUCH_STRUCT_BASE + 2)).toBe(100);     // X u16
+    expect(emu.bus9.read16(TOUCH_STRUCT_BASE + 4)).toBe(80);      // Y u16
+    // SDK-1.x byte-+1 X layout (Brain Training)
+    expect(emu.bus9.read8 (TOUCH_STRUCT_BASE + 1)).toBe(100);
+  });
+
+  it('releasing the pointer makes pressed=0 and resets X/Y to 0', () => {
+    const emu = new Emulator();
+    emu.spi.touchX = 128;
+    emu.spi.touchY = 96;
+    emu.spi.touchZ = 0x800;
+    emu.touchDriver.tickVBlank();
+    expect(emu.bus9.read8(TOUCH_STRUCT_BASE + 0)).toBe(1);
+    // Now release.
+    emu.spi.touchX = null;
+    emu.spi.touchY = null;
+    emu.spi.touchZ = 0;
+    emu.touchDriver.tickVBlank();
+    expect(emu.bus9.read8 (TOUCH_STRUCT_BASE + 0)).toBe(0);
+    expect(emu.bus9.read16(TOUCH_STRUCT_BASE + 2)).toBe(0);
+    expect(emu.bus9.read16(TOUCH_STRUCT_BASE + 4)).toBe(0);
+  });
+
+  it('drag — multiple ticks with different coords each appear in the struct', () => {
+    const emu = new Emulator();
+    emu.spi.touchZ = 0x800;
+    const path = [[10, 20], [50, 60], [100, 100], [200, 150]];
+    for (const [x, y] of path) {
+      emu.spi.touchX = x;
+      emu.spi.touchY = y;
+      emu.touchDriver.tickVBlank();
+      expect(emu.bus9.read16(TOUCH_STRUCT_BASE + 2)).toBe(x);
+      expect(emu.bus9.read16(TOUCH_STRUCT_BASE + 4)).toBe(y);
+      expect(emu.bus9.read8 (TOUCH_STRUCT_BASE + 1)).toBe(x & 0xFF);
+    }
+  });
+
+  it('low touchZ (= hover or stray noise) is NOT treated as pressed', () => {
+    const emu = new Emulator();
+    emu.spi.touchX = 128;
+    emu.spi.touchY = 96;
+    emu.spi.touchZ = 0x50;       // below the 0x100 PRESSURE_THRESHOLD
+    emu.touchDriver.tickVBlank();
+    expect(emu.bus9.read8(TOUCH_STRUCT_BASE + 0)).toBe(0);   // pressed
+    // X/Y zeroed on the unpressed path
+    expect(emu.bus9.read16(TOUCH_STRUCT_BASE + 2)).toBe(0);
+    expect(emu.bus9.read16(TOUCH_STRUCT_BASE + 4)).toBe(0);
+  });
+});

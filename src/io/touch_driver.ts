@@ -101,5 +101,15 @@ export class TouchDriver {
     bus9.write16(TOUCH_STRUCT_BASE + TOUCH_X_OFFSET,       sx);
     bus9.write16(TOUCH_STRUCT_BASE + TOUCH_Y_OFFSET,       sy);
     bus9.write8 (TOUCH_STRUCT_BASE + TOUCH_FRAME_OFFSET,   this.updateFrame);
+    // Brain Training (DS Training, game code ANDP — an SDK 1.x launch
+    // title) reads the screen X coordinate as a single byte at +1 of
+    // the struct, rather than the u16-at-+2 the NitroSDK layout uses.
+    // Setting just byte +1 to a valid X (e.g. 0x80 = 128) is what
+    // advances its language-select state machine. We don't also write
+    // Y at +3 because that would overwrite the X u16 high byte at +3
+    // (low byte of X u16 is at +2) — breaking games that read the
+    // NitroSDK layout. Brain Training appears to be content with X
+    // alone; Y is likely read from elsewhere or not gated on.
+    bus9.write8(TOUCH_STRUCT_BASE + 0x01, sx & 0xFF);
   }
 }
