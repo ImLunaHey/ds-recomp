@@ -222,8 +222,9 @@ export const ROM_LIBRARY: RomMeta[] = [
     label: 'Nintendogs - Labrador',
     kind: 'retail',
     tier: '🟢',
-    blurb: '104K VRAM loaded; renders 14-15 distinct colours on both screens after the NitroOS assist landed.',
+    blurb: 'Boots past the Nintendo logo fade-out into the puppy-select UI (22 distinct colours on top screen) after ARM9 DMA timing=7 (GXFIFO) landed.',
     issues: [
+      'White-out after Nintendo logo (MASTER_BRIGHT_A stuck at 0x4010) is FIXED — the SDK GX-DMA helper now actually streams its command list, the DMA3 completion IRQ clears the wait flag at 0x02155b64, and the fade-in restores MASTER_BRIGHT to 0 ~67 frames after the fade-out.',
       'Requires microphone for "name your puppy" voice training (we do not model the mic).',
     ],
   },

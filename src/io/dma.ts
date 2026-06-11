@@ -14,6 +14,19 @@ const TIMING_IMMEDIATE = 0;
 const TIMING_VBLANK    = 1;
 const TIMING_HBLANK    = 2;
 const TIMING_CARDREADY = 5;     // ARM9 only
+// GXFIFO timing (ARM9 only): real hardware fires when the geometry-engine
+// FIFO drops below half-full (= < 128 entries left). Our GX implementation
+// drains every FIFO write synchronously inside Gx.writeFifo, so from the
+// SDK driver's perspective the FIFO is ALWAYS below the half-full mark
+// — equivalent to "fire as soon as the channel is enabled, then again on
+// every VBlank for repeat reloads". Without this, Nintendogs (which
+// submits its boot-time GX command list via DMA3 timing=7 from inside
+// the NitroSDK GX-DMA helper at 0x0206cc9c) sits forever on a flag at
+// 0x02155b64 that the DMA3-completion IRQ handler would clear — but the
+// channel never runs, the IRQ never fires, the flag stays at 1, and
+// ARM9 spins at the wait-loop 0x02077f60. End result on screen: the
+// fade-out to white locks at MASTER_BRIGHT_A=0x4010 indefinitely.
+const TIMING_GXFIFO    = 7;     // ARM9 only
 
 interface DmaChannel {
   src: number;
@@ -139,6 +152,13 @@ export class Dma {
       c.dstLatched = c.dst;
       c.countLatched = value & 0xFFFF;     // word count in low 16 bits
       if (c.timing === TIMING_IMMEDIATE) this.runChannel(c, this.channels.indexOf(c));
+      // GXFIFO timing on ARM9: our GX FIFO drains synchronously, so the
+      // "FIFO below half-full" condition is always satisfied on enable.
+      // Fire the channel right away — matches the SDK's expectation that
+      // arming a GX-DMA transfer is followed by an immediate burst.
+      else if (this.isArm9 && c.timing === TIMING_GXFIFO) {
+        this.runChannel(c, this.channels.indexOf(c));
+      }
     }
   }
 
@@ -197,7 +217,15 @@ export class Dma {
 
   // Called by PPU when entering VBlank / HBlank — fires every channel
   // whose timing matches.
-  triggerVBlank(): void { this.fireTiming(TIMING_VBLANK); }
+  triggerVBlank(): void {
+    this.fireTiming(TIMING_VBLANK);
+    // ARM9 piggyback: also fire any GXFIFO-timed channels still armed
+    // from a previous frame (repeat-mode channels stay enabled across
+    // runs). Real hardware re-evaluates the "FIFO below half-full"
+    // condition continuously; we re-evaluate once per frame, which is
+    // sufficient because our FIFO drains synchronously.
+    if (this.isArm9) this.fireTiming(TIMING_GXFIFO);
+  }
   triggerHBlank(): void { this.fireTiming(TIMING_HBLANK); }
   triggerCardReady(): void { if (this.isArm9) this.fireTiming(TIMING_CARDREADY); }
 
