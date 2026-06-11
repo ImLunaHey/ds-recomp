@@ -293,6 +293,14 @@ export class Emulator {
     return { arm9: arm9Steps, arm7: arm7Steps, frame: ppu.frameCount };
   }
 
+  // Enable the THUMB basic-block recompiler on the ARM9. Default-OFF
+  // opt-in — UI / tests call this when they want the JIT fast path.
+  // ARM7 stays interpreted (almost no retail game logic runs there,
+  // and a JIT-cache miss on every ARM7 step would just be overhead).
+  enableJit(): void {
+    this.cpu9.enableJit();
+  }
+
   readBlock9(addr: number, length: number): Uint8Array {
     const out = new Uint8Array(length);
     for (let i = 0; i < length; i++) out[i] = this.bus9.read8(addr + i);

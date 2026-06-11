@@ -16,6 +16,7 @@ import { armExecute } from './arm';
 import { thumbExecute } from './thumb';
 import { Cp15 } from './cp15';
 import type { BiosHle } from '../bios/hle';
+import { Recompiler } from '../recomp/compiler';
 
 // Magic address the JS-side IRQ HLE sets LR to. When the user IRQ
 // handler eventually returns via BX LR, the CPU's next decode lands
@@ -48,10 +49,23 @@ export class Cpu {
   // (e.g. SM64DS early IPCSYNC dance at ARM7 0x037FB050..0x037FB078).
   stallCycles = 0;
   branched = false;
+  // Optional WASM basic-block recompiler. Created lazily by enableJit();
+  // when present, step() asks it to dispatch the THUMB block at r[15]
+  // before falling back to the interpreter. Default null — the JIT is
+  // an opt-in fast path, the interpreter remains the trusted reference.
+  recomp: Recompiler | null = null;
 
   constructor(bus: ArmBus, isArm9: boolean) {
     this.bus = bus;
     this.isArm9 = isArm9;
+  }
+
+  // Construct and attach the THUMB basic-block recompiler. Default-OFF
+  // build keeps `recomp` null; UI / tests opt-in by calling this.
+  enableJit(): Recompiler {
+    if (!this.recomp) this.recomp = new Recompiler(this);
+    this.recomp.enabled = true;
+    return this.recomp;
   }
 
   reset(entryPc: number, sysSp: number, irqSp: number, svcSp: number): void {
@@ -140,6 +154,21 @@ export class Cpu {
       this.flushPipeline();
       this.cycles += 1;
       return 1;
+    }
+
+    // Recompiler dispatch — opt-in THUMB basic-block JIT. Returns the
+    // number of THUMB insns it executed (0 if not dispatched). On a hit,
+    // the block has already updated r[15] to the post-block PC, so we
+    // bypass the interpreter fetch/decode/execute and account the run as
+    // N cycles instead of 1 (treating a 5-32-insn block as a single
+    // cycle would let runFrame consume the frame budget in 1/N the time
+    // it should, sprinting through game code).
+    if (this.recomp !== null) {
+      const jitN = this.recomp.tryDispatch();
+      if (jitN > 0) {
+        this.cycles += jitN;
+        return jitN;
+      }
     }
 
     const insnSize = isThumb ? 2 : 4;
