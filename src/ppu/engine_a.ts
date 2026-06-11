@@ -18,6 +18,7 @@ import { renderBitmapScanline } from './bitmap_bg';
 import { renderAffineBgScanline, advanceAffineRefForScanline } from './affine_bg';
 import { renderObjScanline, newObjLine, clearObjLine } from './sprites';
 import { getActiveVramRouter } from '../memory/vram_router';
+import { applyFog, applyEdgeMark } from './gx_fog';
 
 const ENGINE_A_PRAM = 0;
 const ENGINE_B_PRAM = 0x400;
@@ -243,11 +244,38 @@ function renderEngine(ppu: Ppu, dispcnt: number, fb: Uint8ClampedArray, isEngine
 
     // 3D engine overrides BG0 (Engine A only) when DISPCNT bit 3 is set.
     // GX writes BGR555 | 0x8000 for "drawn" pixels, matching our format.
+    // After copying we apply the 3D post-process passes (fog, edge mark)
+    // gated on DISP3DCNT bits 5 and 7. When DISP3DCNT is 0 — the default
+    // — both branches are skipped and the raw rasterizer output reaches
+    // BG0 unchanged, preserving the existing test ROMs' behaviour
+    // exactly.
     if (isEngineA && (dispcnt & 0x8) !== 0) {
-      const fbFront = ppu.gx.fbFront;
+      const gx = ppu.gx;
+      const fbFront = gx.fbFront;
+      const drawn = gx.drawnMaskFront;
       const rowBase = y * SCREEN_W;
+      const disp3d = gx.dispCnt3D;
+      const fogEnable = (disp3d & 0x80) !== 0;
+      const edgeEnable = (disp3d & 0x20) !== 0;
       for (let x = 0; x < SCREEN_W; x++) {
-        bgLines[0][x] = fbFront[rowBase + x];
+        let c = fbFront[rowBase + x];
+        // Without a real per-pixel Z buffer we cannot fog accurately.
+        // Pass 0 so games that set up fog still see a reproducible
+        // (zero-density-by-default) blend — gx.fogTable[0] is 0 in the
+        // default state, making this a no-op. Real Z plumbing is on
+        // the texturing/Zbuffer follow-up; the API is shaped for it.
+        if (fogEnable && (c & 0x8000) !== 0) {
+          c = applyFog(c, 0, gx.fogTable, gx.fogOffset, gx.fogColor);
+        }
+        if (edgeEnable) {
+          // Polygon-IDs aren't tracked yet (single triangle stream).
+          // The drawn mask gives us the silhouette of the rendered
+          // region against the empty background, which matches the
+          // visible outline most cel-shaded games rely on. polygon-
+          // ID 0 → first slot in EDGE_COLOR_TABLE.
+          c = applyEdgeMark(c, x, y, SCREEN_W, SCREEN_H, drawn, gx.edgeColorTable[0]);
+        }
+        bgLines[0][x] = c;
       }
     }
 

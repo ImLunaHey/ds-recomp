@@ -482,6 +482,51 @@ export class IoBus {
       this.ppu.dispCapCnt = ((this.ppu.dispCapCnt & ~(0xFF << shift)) | ((v & 0xFF) << shift)) >>> 0;
       return;
     }
+    // 3D engine control + post-process tables. These all live on the
+    // ARM9 side; reads/writes from ARM7 are no-ops on hardware (GBATEK
+    // §"3D Display Engine"). We gate on isArm9 to match.
+    if (this.isArm9) {
+      // DISP3DCNT (0x04000060, 16-bit). Bit 5 = edge marking, bit 7 = fog.
+      if (addr === 0x04000060) {
+        this.ppu.gx.dispCnt3D = (this.ppu.gx.dispCnt3D & 0xFF00) | (v & 0xFF);
+        return;
+      }
+      if (addr === 0x04000061) {
+        this.ppu.gx.dispCnt3D = (this.ppu.gx.dispCnt3D & 0x00FF) | ((v & 0xFF) << 8);
+        return;
+      }
+      // EDGE_COLOR_TABLE (0x04000330..0x0400033F, 8 × BGR555).
+      if (addr >= 0x04000330 && addr < 0x04000340) {
+        const idx = (addr - 0x04000330) >>> 1;
+        const shift = (addr & 1) * 8;
+        this.ppu.gx.edgeColorTable[idx] =
+          ((this.ppu.gx.edgeColorTable[idx] & ~(0xFF << shift)) | ((v & 0xFF) << shift)) & 0xFFFF;
+        return;
+      }
+      // FOG_COLOR (0x04000358, 32-bit). Only the low 15 bits are color
+      // (BGR555); upper bits include a 5-bit alpha that we ignore for
+      // now (no per-pixel alpha through the rasterizer yet).
+      if (addr >= 0x04000358 && addr < 0x0400035C) {
+        const shift = (addr & 3) * 8;
+        this.ppu.gx.fogColor =
+          ((this.ppu.gx.fogColor & ~(0xFF << shift)) | ((v & 0xFF) << shift)) & 0x7FFF;
+        return;
+      }
+      // FOG_OFFSET (0x0400035C, 16-bit). 15-bit Z reference.
+      if (addr === 0x0400035C) {
+        this.ppu.gx.fogOffset = (this.ppu.gx.fogOffset & 0xFF00) | (v & 0xFF);
+        return;
+      }
+      if (addr === 0x0400035D) {
+        this.ppu.gx.fogOffset = (this.ppu.gx.fogOffset & 0x00FF) | ((v & 0xFF) << 8);
+        return;
+      }
+      // FOG_TABLE (0x04000360..0x0400037F, 32 × 7-bit density bytes).
+      if (addr >= 0x04000360 && addr < 0x04000380) {
+        this.ppu.gx.fogTable[addr - 0x04000360] = v & 0x7F;
+        return;
+      }
+    }
     // Engine B BG regs.
     if (addr >= 0x04001008 && addr < 0x04001010) {
       const bg = (addr - 0x04001008) >>> 1;

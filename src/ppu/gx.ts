@@ -24,6 +24,18 @@
 
 import type { SharedMemory } from '../memory/shared';
 import type { Irq } from '../io/irq';
+import {
+  newLightState,
+  newMaterialState,
+  setLightVector,
+  setLightColor,
+  setDifAmb,
+  setSpeEmi,
+  unpackNormal,
+  computeVertexColor,
+  type LightState,
+  type MaterialState,
+} from './gx_lighting';
 
 export const GX_SCREEN_W = 256;
 export const GX_SCREEN_H = 192;
@@ -89,6 +101,28 @@ export class Gx {
   fbBack  = new Uint16Array(GX_SCREEN_W * GX_SCREEN_H);
   fbFront = new Uint16Array(GX_SCREEN_W * GX_SCREEN_H);
 
+  // Companion 1-byte/pixel mask: 1 = the pixel was drawn by the GX
+  // rasterizer this frame, 0 = transparent / outside any triangle. The
+  // 2D composer uses this for edge-mark detection (4-neighbour
+  // boundary). Kept as a separate buffer rather than reusing fbFront's
+  // bit 15 because the edge-mark pass needs to read the surrounding
+  // pixels' drawn state independently of the color encoding.
+  drawnMaskBack  = new Uint8Array(GX_SCREEN_W * GX_SCREEN_H);
+  drawnMaskFront = new Uint8Array(GX_SCREEN_W * GX_SCREEN_H);
+
+  // 3D control register block (GBATEK §"3D Display Engine Registers").
+  // engine_a samples these during the per-pixel BG0 composite when
+  // DISPCNT bit 3 (3D enable) is set. Writes come from IO bus
+  // dispatchers; the defaults here mean "all post-process passes off"
+  // so the rasterizer's raw output reaches the screen unchanged when
+  // no game touches these registers — matches existing test ROMs that
+  // expect plain interpolated triangles.
+  dispCnt3D = 0;             // 0x04000060 (16-bit). bit 5 = edge mark, bit 7 = fog
+  fogColor  = 0;             // 0x04000358 BGR555 (alpha ignored)
+  fogOffset = 0;             // 0x0400035C 15-bit Z reference
+  fogTable  = new Uint8Array(32);  // 0x04000360..0x0400037F (32 × 7-bit density)
+  edgeColorTable = new Uint16Array(8);   // 0x04000330..0x0400033F (8 × BGR555)
+
   // Matrix stacks. Position stack is 31 deep, projection 1 deep.
   matProj = mat4Identity();
   matPos  = mat4Identity();
@@ -105,6 +139,20 @@ export class Gx {
   vertexBuf: Vertex[] = [];
   currentColor = 0x7FFF;     // white
   lastVtxX = 0; lastVtxY = 0; lastVtxZ = 0;     // for VTX_DIFF + partial coords
+
+  // Lighting state. The material + 4 lights are populated by DIF_AMB /
+  // SPE_EMI / LIGHT_VECTOR / LIGHT_COLOR. polygonAttr (cmd 0x29) gates
+  // which lights contribute on a per-polygon basis: bits 0..3 of the
+  // most recent POLYGON_ATTR value enable lights 0..3. The default
+  // polygonAttr=0 means "no lights enabled" → computeVertexColor will
+  // return the material's emission color (= black by default). To
+  // preserve the existing "no lighting" behaviour, the gx.ts NORMAL
+  // handler only overrides currentColor when at least one light is
+  // enabled — that way unlit ROMs (and the existing gx.test.ts smoke
+  // triangle) keep their plain COLOR-set vertex color.
+  lights: LightState = newLightState();
+  material: MaterialState = newMaterialState();
+  polygonAttr = 0;
 
   // Command queue (the actual GXFIFO between CPU writes and our processor).
   // Each entry is { op: number, params: number[] }.
@@ -179,6 +227,12 @@ export class Gx {
       case 0x1B: this.matrixMult(this.makeScale(p[0], p[1], p[2])); return;
       case 0x1C: this.matrixMult(this.makeTranslate(p[0], p[1], p[2])); return;
       case 0x20: this.currentColor = this.unpackColor(p[0]); return;
+      case 0x21: this.normal(p[0]); return;
+      case 0x29: this.polygonAttr = p[0] >>> 0; return;
+      case 0x30: this.dif_amb(p[0]); return;
+      case 0x31: this.spe_emi(p[0]); return;
+      case 0x32: setLightVector(this.lights, p[0] >>> 0); return;
+      case 0x33: setLightColor(this.lights, p[0] >>> 0); return;
       case 0x23: this.vertex16(p[0], p[1]); return;
       case 0x24: this.vertex10(p[0]); return;
       case 0x25: this.vertexPartial(p[0], 'XY'); return;
@@ -207,7 +261,13 @@ export class Gx {
   private matrixPush(): void {
     if (this.matMode === MTX_MODE_PROJ) this.projStack.push(new Float64Array(this.matProj));
     else if (this.matMode === MTX_MODE_TEX) {/* texture stack — single slot */}
-    else this.posStack.push(new Float64Array(this.matPos));
+    else {
+      this.posStack.push(new Float64Array(this.matPos));
+      // POSVEC: push vec onto its own stack so MTX_POP in the same mode
+      // restores both. Pos-only mode still pushes pos but the vec
+      // stack stays untouched, matching hardware.
+      if (this.matMode === MTX_MODE_POSVEC) this.vecStack.push(new Float64Array(this.matVec));
+    }
   }
 
   private matrixPop(n: number): void {
@@ -224,6 +284,10 @@ export class Gx {
       for (let i = 0; i < Math.abs(steps); i++) {
         const v = this.posStack.pop();
         if (v) this.matPos = v;
+        if (this.matMode === MTX_MODE_POSVEC) {
+          const vv = this.vecStack.pop();
+          if (vv) this.matVec = vv;
+        }
       }
     }
   }
@@ -231,12 +295,24 @@ export class Gx {
   private matrixLoad(m: Float64Array): void {
     if (this.matMode === MTX_MODE_PROJ) this.matProj.set(m);
     else if (this.matMode === MTX_MODE_TEX) this.matTex.set(m);
-    else this.matPos.set(m);
+    else {
+      this.matPos.set(m);
+      // In POSVEC mode the same load also writes the vector matrix —
+      // GBATEK §"3D Matrix Stack" lists mode 2 as "set position AND
+      // vector". Without this the lighting normal transform (which uses
+      // matVec) would silently keep the previous matrix even when the
+      // game expected both stacks to track.
+      if (this.matMode === MTX_MODE_POSVEC) this.matVec.set(m);
+    }
   }
 
   private matrixMult(m: Float64Array): void {
     const cur = this.currentMatrix();
     mat4Mul(cur, cur, m);
+    // POSVEC: apply the same multiply to the vector matrix so the
+    // lighting transform stays consistent with the position-modelview
+    // chain.
+    if (this.matMode === MTX_MODE_POSVEC) mat4Mul(this.matVec, this.matVec, m);
   }
 
   private unpack4x4(p: number[]): Float64Array {
@@ -284,6 +360,53 @@ export class Gx {
 
   private unpackColor(c: number): number {
     return c & 0x7FFF;
+  }
+
+  // ---- Lighting helpers (cmd 0x21 / 0x29-30-31) ----
+
+  // Cmd 0x30 DIF_AMB updates diffuse + ambient and, when bit 15 of the
+  // packed param is set, immediately latches the diffuse color into the
+  // current vertex color. The latch lets SDK code stamp a per-mesh
+  // base color even when no NORMAL follows (e.g. for unlit fallback
+  // meshes that share the same material struct as lit ones).
+  private dif_amb(packed: number): void {
+    setDifAmb(this.material, packed);
+    if (this.material.setVertexColor) this.currentColor = this.material.diffuse;
+  }
+
+  private spe_emi(packed: number): void {
+    setSpeEmi(this.material, packed);
+  }
+
+  // Cmd 0x21 NORMAL is the "vertex shader" entry point: the param packs
+  // a 3 × Q1.9 surface normal that gets multiplied by the vector matrix
+  // and fed into the per-light dot product. The lit result becomes the
+  // current vertex color, applied to every subsequent VTX_* until the
+  // next COLOR / NORMAL command.
+  //
+  // We only override currentColor if at least one of the four light
+  // enable bits in POLYGON_ATTR is set (default polygonAttr=0 means no
+  // lights → keep COLOR-set value). This preserves the existing un-lit
+  // behaviour exactly for ROMs that never enable lighting (and is what
+  // keeps gx.test.ts / gx_basic.test.ts / gx_bus.test.ts green).
+  private normal(packed: number): void {
+    if ((this.polygonAttr & 0xF) === 0) return;
+    const nObj = unpackNormal(packed);
+    // Transform by the vector matrix. The DS uses a dedicated matVec
+    // stack but most engines also accept POSVEC mode (matMode=2) where
+    // pos and vec are tracked together; our gx tracks matVec as a
+    // separate field that mirrors matPos when POSVEC is used. We
+    // transform the normal by matVec's upper-left 3x3 (no translate).
+    const m = this.matVec;
+    const nx = m[0] * nObj.x + m[4] * nObj.y + m[8]  * nObj.z;
+    const ny = m[1] * nObj.x + m[5] * nObj.y + m[9]  * nObj.z;
+    const nz = m[2] * nObj.x + m[6] * nObj.y + m[10] * nObj.z;
+    this.currentColor = computeVertexColor(
+      { x: nx, y: ny, z: nz },
+      this.polygonAttr,
+      this.material,
+      this.lights,
+    );
   }
 
   // ---- Vertex assembly ----
@@ -391,7 +514,10 @@ export class Gx {
       const fbRow = y * GX_SCREEN_W;
       // Flat fill with v0's color for now.
       const color = (va.color & 0x7FFF) | 0x8000;       // bit 15 = drawn
-      for (let x = xLeft; x <= xRight; x++) this.fbBack[fbRow + x] = color;
+      for (let x = xLeft; x <= xRight; x++) {
+        this.fbBack[fbRow + x] = color;
+        this.drawnMaskBack[fbRow + x] = 1;
+      }
     }
   }
 
@@ -412,6 +538,8 @@ export class Gx {
     // Promote back → front, clear back.
     this.fbFront.set(this.fbBack);
     this.fbBack.fill(0);
+    this.drawnMaskFront.set(this.drawnMaskBack);
+    this.drawnMaskBack.fill(0);
   }
 }
 
