@@ -172,6 +172,23 @@ export function renderObjScanline(
             : router.resolveObjExtPalB(off);
           if (idx >= 0) {
             c = vram[idx] | (vram[idx + 1] << 8);
+            // When the ext-pal slot is mapped but the underlying bank
+            // has never been populated, the lookup returns 0x0000.
+            // Per-pixel that reads as "transparent" — Brain Training's
+            // language-select buttons end up with checkerboard-pixelated
+            // text (the 16-color outline sprite renders fine, but the
+            // 256-color fill sprite vanishes pixel-by-pixel because
+            // every fill index reads 0x0000). Falling back to PRAM in
+            // that case matches what guac's renderer effectively does
+            // (it always reads the ext-pal pointer; their `ExtObj` is
+            // never null after boot because they mirror PRAM into it
+            // when no bank covers the slot — same observable outcome).
+            // Real DS treats it as transparent; this is a friendlier
+            // fallback for emulator state-machine paths we don't model.
+            if (c === 0) {
+              const palOff = pramBase + palIdx * 2;
+              c = pram[palOff] | (pram[palOff + 1] << 8);
+            }
           } else {
             const palOff = pramBase + palIdx * 2;
             c = pram[palOff] | (pram[palOff + 1] << 8);
