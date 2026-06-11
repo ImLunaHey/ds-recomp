@@ -218,3 +218,62 @@ describe('NitroSDK OS-thread deadlock assist', () => {
     expect((MAIN_RAM_BASE & MAIN_RAM_MASK)).toBe(0);
   });
 });
+
+describe('NitroOsAssist — VBlank tick counter', () => {
+  it('bumps the u32 at 0x02FFFF8C every frame when value looks like a counter', () => {
+    const emu = new Emulator();
+    // Default value is 0 — looks like a counter. Tick a few frames and
+    // verify it climbs. We can't run a real ROM but we can call tick()
+    // directly with the frame counter.
+    const off = 0x02FFFF8C & MAIN_RAM_MASK;
+    expect(emu.mem.mainRam[off]).toBe(0);
+    emu.nitroOs.tick(0);
+    expect(emu.mem.mainRam[off]).toBe(1);
+    emu.nitroOs.tick(1);
+    expect(emu.mem.mainRam[off]).toBe(2);
+    emu.nitroOs.tick(2);
+    expect(emu.mem.mainRam[off]).toBe(3);
+    expect(emu.nitroOs.syntheticTicks).toBe(3);
+  });
+
+  it('does NOT bump if value looks pointer-shaped (high byte set)', () => {
+    const emu = new Emulator();
+    const off = 0x02FFFF8C & MAIN_RAM_MASK;
+    // Plant a pointer-shaped value — game is using this address for
+    // something else; we mustn't stomp it.
+    emu.mem.mainRam[off]     = 0x00;
+    emu.mem.mainRam[off + 1] = 0x10;
+    emu.mem.mainRam[off + 2] = 0x00;
+    emu.mem.mainRam[off + 3] = 0x02;  // = 0x02001000 — clearly a pointer
+    emu.nitroOs.tick(0);
+    expect(emu.mem.mainRam[off + 3]).toBe(0x02);   // untouched
+    expect(emu.nitroOs.syntheticTicks).toBe(0);
+  });
+});
+
+describe('NitroOsAssist — PXI overflow drain', () => {
+  it('does nothing when q9to7 is below the threshold', () => {
+    const emu = new Emulator();
+    emu.ipc.enable9 = true; emu.ipc.enable7 = true;
+    // Plant 8 entries — below PXI_DRAIN_THRESHOLD (12).
+    for (let i = 0; i < 8; i++) emu.ipc.writeSend(true, i + 1);
+    for (let f = 0; f < 200; f++) emu.nitroOs.tick(f);
+    expect(emu.nitroOs.pxiDrains).toBe(0);
+  });
+
+  it('drains the q9to7 head after PXI_DRAIN_FRAMES of overflow', () => {
+    const emu = new Emulator();
+    emu.ipc.enable9 = true; emu.ipc.enable7 = true;
+    // Fill q9to7 to capacity.
+    for (let i = 0; i < 16; i++) emu.ipc.writeSend(true, 0xC0080000 | i);
+    expect(emu.ipc.q9to7.size).toBe(16);
+    // Tick until the drain kicks in — first PXI_DRAIN_FRAMES = 120
+    // frames of "queue full" before the assist drains.
+    for (let f = 0; f < 120; f++) emu.nitroOs.tick(f);
+    expect(emu.nitroOs.pxiDrains).toBeGreaterThanOrEqual(1);
+    // q9to7 should be shorter; q7to9 should have grown (the synthesized
+    // ack went the other way).
+    expect(emu.ipc.q9to7.size).toBeLessThan(16);
+    expect(emu.ipc.q7to9.size).toBeGreaterThan(0);
+  });
+});

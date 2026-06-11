@@ -51,7 +51,7 @@
 
 import type { Emulator } from '../emulator';
 import { IRQ_IPC_SYNC } from '../io/irq';
-import { MAIN_RAM_BASE } from '../memory/regions';
+import { MAIN_RAM_BASE, MAIN_RAM_MASK } from '../memory/regions';
 
 // NitroSDK OS_Thread state codes (per the public NitroSDK headers — these
 // constants are stable across SDK revisions because the kernel scheduler
@@ -66,6 +66,19 @@ export const OS_THREAD_STATE_DEAD     = 0x0008;
 const DEADLOCK_FRAMES = 60;       // 1 second of WFI halt before we act.
 const PROGRESS_WINDOW = 60;       // frames after wake we expect progress.
 const PC_DELTA_GOOD   = 0x1000;   // PC must jump at least this far.
+
+// SDK system tick counter address. NitroSDK's VBlank handler bumps a
+// u32 here every VBlank. The triage in commit a3199d0 traced LEGO
+// Battles: Ninjago and Plants vs. Zombies to a busy-spin on this exact
+// word (LEGO doesn't have an enabled VBlank IRQ; PvZ runs with global
+// IME = false so its own handler can't fire). We bump it ourselves.
+const SDK_TICK_COUNTER_ADDR = 0x02FFFF8C;
+
+// PXI-drain heuristics. Drain only when the queue is at-or-above this
+// many entries AND the streak has lasted this many frames — that's
+// enough hysteresis to leave games with real ARM7 reply traffic alone.
+const PXI_DRAIN_THRESHOLD = 12;   // 75% of the 16-entry FIFO.
+const PXI_DRAIN_FRAMES    = 120;  // 2 seconds of "queue ≥ 12 + no ARM7 acks".
 
 // Region of main RAM we scan for OS_Thread structs. NitroSDK's static
 // allocator places the thread table inside the SDK reserved area near
@@ -115,6 +128,9 @@ function write32(mem: Uint8Array, off: number, v: number): void {
   mem[off + 1] = (v >>  8) & 0xFF;
   mem[off + 2] = (v >> 16) & 0xFF;
   mem[off + 3] = (v >> 24) & 0xFF;
+}
+function read32(mem: Uint8Array, off: number): number {
+  return (mem[off] | (mem[off + 1] << 8) | (mem[off + 2] << 16) | (mem[off + 3] << 24)) >>> 0;
 }
 
 // Scan main RAM for the OS_ThreadInfo table. Real NitroSDK stores the
@@ -180,6 +196,17 @@ export class NitroOsAssist {
   // Diagnostic counter. Tests and the UI's debug panel can read this
   // to confirm the assist did / did not fire against a given ROM.
   synthesizedWakes = 0;
+  // Same idea for the secondary assists below.
+  syntheticTicks = 0;
+  pxiDrains = 0;
+  // PXI-overflow detector: number of consecutive frames where the
+  // ARM9→ARM7 queue has been at least PXI_DRAIN_THRESHOLD entries
+  // AND ARM7 hasn't acked anything. If this hits PXI_DRAIN_FRAMES we
+  // synthesize a generic completion-bit ack for the head value to
+  // unstick the SDK. Pokemon Diamond/Pearl/Platinum hit this at boot
+  // — q9to7 fills to 16 (full) because our static stub-server reply
+  // table doesn't cover the tags they send.
+  private pxiStuckFrames = 0;
 
   constructor(emu: Emulator) {
     this.emu = emu;
@@ -193,6 +220,12 @@ export class NitroOsAssist {
     const cpu9 = this.emu.cpu9;
     const irq9 = this.emu.irq9;
     const mem  = this.emu.mem.mainRam;
+
+    // Secondary assists that fire unconditionally per frame (not gated
+    // by the CPU's halt state). They write to specific game-state
+    // locations that real-DS VBlank handlers would have updated.
+    this.tickVBlankTickCounter(mem);
+    this.tickPxiDrain();
 
     // Are we even halted? If not, the deadlock counter resets and we
     // have nothing to do. Also reset the post-wake window — forward
@@ -292,6 +325,55 @@ export class NitroOsAssist {
     // DEADLOCK_FRAMES wait before kicking the NEXT candidate.
     this.wfiFrames = 0;
     return true;
+  }
+
+  // NitroSDK system tick counter lives near the top of Main RAM at
+  // 0x02FFFF8C — every VBlank handler bumps the u32 there. LEGO Battles:
+  // Ninjago and Plants vs. Zombies both busy-spin on this exact word
+  // expecting it to increment; PvZ even runs with IME=False so its own
+  // VBlank handler never gets a chance to bump it. We do the bump
+  // ourselves once per VBlank IFF the value looks like a counter (small,
+  // monotonic) and not, say, a function pointer the game happens to have
+  // placed there. Skipping when the value looks pointer-shaped keeps
+  // working games (which don't rely on this address) untouched.
+  private tickVBlankTickCounter(mem: Uint8Array): void {
+    // 0x02FFFF8C lives in the main-RAM mirror window — mask through the
+    // 4 MB mirror to get the actual backing-store offset (= 0x3FFF8C).
+    const off = SDK_TICK_COUNTER_ADDR & MAIN_RAM_MASK;
+    if (off + 4 > mem.length) return;
+    const cur = read32(mem, off);
+    // Pointer-shaped values (0x02xxxxxx, 0x03xxxxxx, etc.) are clearly
+    // not tick counters; small monotonic ones with a high byte of 0 are.
+    if (cur > 0x00FFFFFF) return;
+    write32(mem, off, (cur + 1) >>> 0);
+    this.syntheticTicks++;
+  }
+
+  // ARM9 → ARM7 PXI FIFO drain. Pokemon DPPt + family fill q9to7 to 16
+  // (full) because our static stub-server reply table only matches a few
+  // specific value-shape patterns. Once the queue is full the SDK is
+  // stuck in a CNT_SEND_FULL retry loop. If we detect the queue has
+  // been at-or-near full for PXI_DRAIN_FRAMES consecutive frames AND no
+  // real ARM7 traffic has happened in that window, we synthesize a
+  // generic completion-bit ack (`value | 0x20`, the SDK's standard
+  // "done" bit) for the head value to unstick the SDK.
+  private tickPxiDrain(): void {
+    const ipc = this.emu.ipc;
+    if (ipc.q9to7.size < PXI_DRAIN_THRESHOLD) {
+      this.pxiStuckFrames = 0;
+      return;
+    }
+    this.pxiStuckFrames++;
+    if (this.pxiStuckFrames < PXI_DRAIN_FRAMES) return;
+    // Drain ONE entry per frame so retries from the SDK can refill the
+    // queue at the natural rate (rather than flooding ARM9 with acks).
+    const head = ipc.q9to7.peek();
+    if (head === null) return;
+    ipc.q9to7.pop();
+    ipc.queueArm7Ack((head | 0x20) >>> 0);
+    this.pxiDrains++;
+    // Reset the streak so we wait again before draining the next entry.
+    this.pxiStuckFrames = 0;
   }
 }
 

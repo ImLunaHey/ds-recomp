@@ -90,6 +90,12 @@ class Queue {
     this.lastRead = v;
     return v;
   }
+  // Read the head value WITHOUT consuming it. Used by the NitroOS
+  // PXI-drain assist, which inspects the head to synthesize an ack.
+  peek(): number | null {
+    if (this.size === 0) return null;
+    return this.buf[this.head];
+  }
   clear(): void { this.head = this.tail = this.size = 0; }
 }
 
@@ -335,6 +341,15 @@ export class Ipc {
   private queueArm7Reply(value: number): void {
     if (!this.enable7) return;
     this.writeSend(false, value >>> 0, true);
+  }
+
+  // Public wrapper for the NitroOS PXI-drain assist. Same semantics as
+  // queueArm7Reply but exposed so the assist (which lives in
+  // src/bios/nitro_os.ts) can synthesize generic completion-bit acks
+  // when our static stub-server reply table doesn't cover a tag the
+  // game is sending.
+  queueArm7Ack(value: number): void {
+    this.queueArm7Reply(value);
   }
 
   // ---- FIFO RECV ----
