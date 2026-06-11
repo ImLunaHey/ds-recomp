@@ -163,18 +163,22 @@ describe('DMA controller', () => {
       expect(bus.read32(0x204)).toBe(0);
     });
 
-    it('dstMode=3 (increment-reload) restores dst register to the latched value', () => {
+    it('dstMode=3 (increment-reload) writes forward, then reloads dst to the latched start', () => {
       const { bus, dma } = makeDma(true);
       for (let i = 0; i < 4; i++) bus.write32(0x100 + i * 4, 0xC000 + i);
       dma.write32(CH0_SRC, 0x100);
       dma.write32(CH0_DST, 0x200);
       dma.write32(CH0_CNT, encodeCnt({ count: 4, word32: true, dstMode: 3, enable: true, isArm9: true }));
-      // The visible dst register is reloaded to the latched 0x200.
-      // (Real DMA "increment + reload" sets dst back to start so the next
-      // repeat trigger transfers to the same buffer.)
+      // GBATEK: mode 3 walks dst forward DURING the transfer (same as
+      // mode 0), then snaps back to the latched start AFTER the channel
+      // finishes — that way the next repeat trigger refills the same
+      // buffer from scratch. Each source word lands at its own slot:
+      expect(bus.read32(0x200)).toBe(0xC000);
+      expect(bus.read32(0x204)).toBe(0xC001);
+      expect(bus.read32(0x208)).toBe(0xC002);
+      expect(bus.read32(0x20C)).toBe(0xC003);
+      // And the visible dst register is reloaded for the next round.
       expect(dma.channels[0].dst).toBe(0x200);
-      // The last write landed; that's the observable end state.
-      expect(bus.read32(0x200)).toBe(0xC003);
     });
 
     it('dstMode=1 (decrement) writes from high to low addresses', () => {

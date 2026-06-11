@@ -160,8 +160,12 @@ export class Dma {
       // Step source.
       if (c.srcMode === 0) src = (src + step) >>> 0;
       else if (c.srcMode === 1) src = (src - step) >>> 0;
-      // Step dest.
-      if (c.dstMode === 0) dst = (dst + step) >>> 0;
+      // Step dest. Mode 3 is "increment + reload" per GBATEK — it walks
+      // forward DURING the transfer just like mode 0, then snaps back
+      // to the latched start AFTER the channel finishes. The earlier
+      // version only handled the post-transfer reload, so all N words
+      // hit the SAME destination address.
+      if (c.dstMode === 0 || c.dstMode === 3) dst = (dst + step) >>> 0;
       else if (c.dstMode === 1) dst = (dst - step) >>> 0;
       // Real DS DMA updates DAD/SAD as the transfer progresses. Games
       // that poll the registers expect to see them change. We do an
