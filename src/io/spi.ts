@@ -265,6 +265,12 @@ export class Spi {
   // touchscreen calibration block (matching what initFirmware() stamps).
   touchX: number | null = null;
   touchY: number | null = null;
+  // Pressure latch (12-bit ADC value, 0 = not pressed). The UI writes
+  // a nonzero value (typically around 0x800) when the user presses the
+  // bottom canvas and 0 when released. Consumed by the synthesized
+  // touch driver in `io/touch_driver.ts` — having it on Spi alongside
+  // touchX/Y keeps the "current pointer state" all in one place.
+  touchZ = 0;
 
   private tickTouchscreen(byte: number): number {
     if (this.bytePos === 0) {

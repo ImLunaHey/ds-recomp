@@ -22,6 +22,7 @@ import { DsMath } from './io/ds_math';
 import { Spi } from './io/spi';
 import { Timers } from './io/timers';
 import { Wifi } from './io/wifi';
+import { TouchDriver } from './io/touch_driver';
 import { Ppu, DOTS_PER_LINE, LINES_PER_FRAME } from './ppu/ppu';
 import { BiosHle } from './bios/hle';
 import { installBiosStubs } from './bios/stub';
@@ -59,6 +60,10 @@ export class Emulator {
   // nitroOsAssist = false.
   nitroOs: NitroOsAssist;
   nitroOsAssist = true;
+  // SDK touch driver assist — synthesizes the cooked OS_TouchPanelStatus
+  // struct at 0x027FFFA8 on each VBlank so games see taps even though we
+  // don't run the real ARM7 touch-sampling task.
+  touchDriver: TouchDriver;
   header: NdsHeader | null = null;
   load: LoadResult | null = null;
   overlays: OverlayLoadStats | null = null;
@@ -109,6 +114,10 @@ export class Emulator {
     this.io9.bios = this.bios9;
     this.io7.bios = this.bios7;
     this.nitroOs = new NitroOsAssist(this);
+    // Synthesizes the cooked NitroSDK touch sample once per VBlank so
+    // games that wait on the SDK touch wakeup actually see a tap. See
+    // io/touch_driver.ts for the OS shared-work struct layout used.
+    this.touchDriver = new TouchDriver(this);
   }
 
   // Wipe all volatile state — main RAM, VRAM, PRAM, OAM, IRQ controllers,
@@ -295,7 +304,14 @@ export class Emulator {
       // next sample).
       this.io7.sound.step(batch);
       dotsThisFrame += batch;
-      if (ppu.frameDone) { ppu.frameDone = false; break; }
+      if (ppu.frameDone) {
+        ppu.frameDone = false;
+        // VBlank just fired — refresh the synthesized OS shared-work
+        // touch struct so games waiting on the SDK touch task wakeup
+        // see the current pointer state on the next ARM9 step.
+        this.touchDriver.tickVBlank();
+        break;
+      }
     }
     this.totalDots += dotsThisFrame;
     // NitroSDK OS-thread deadlock assist. Run AFTER CPU stepping so
