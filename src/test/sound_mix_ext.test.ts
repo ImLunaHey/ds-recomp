@@ -65,7 +65,12 @@ describe('Sound — PSG / ADPCM placeholders', () => {
     for (let i = 0; i < out.length; i++) expect(out[i]).toBe(0);
   });
 
-  it('ADPCM-format channel produces silence (placeholder)', () => {
+  it('ADPCM-format channel decodes from the 4-byte header', () => {
+    // 4-byte IMA-ADPCM header: predictor = 0x4040 (= +16448, ~0.5),
+    // stepIndex = 0x40 (& 0x7F = 64). The first decoded sample is
+    // the header predictor itself, so out[0] reflects roughly +0.5
+    // times the channel/master gain stack. (Previously this test
+    // expected silence because ADPCM was a placeholder.)
     const payload = new Uint8Array([0x40, 0x40, 0x40, 0x40]);
     sound.mem = makeMem(payload);
     startChannel(sound, 0, {
@@ -74,7 +79,10 @@ describe('Sound — PSG / ADPCM placeholders', () => {
       lenHalfwords: 4,
     });
     const out = sound.mix(8, 32000);
-    for (let i = 0; i < out.length; i++) expect(out[i]).toBe(0);
+    // Now non-silent — the decoder must produce a real signal whose
+    // magnitude is within the [-1, 1] post-clamp range.
+    expect(out[0]).not.toBe(0);
+    expect(Math.abs(out[0])).toBeLessThan(1);
   });
 });
 

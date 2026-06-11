@@ -32,6 +32,26 @@ const FMT_PCM16 = 1;
 const FMT_ADPCM = 2;
 const FMT_PSG   = 3;
 
+// IMA-ADPCM step / index tables. Values are the standard IMA-ADPCM
+// constants (see Intel's "DVI ADPCM Wave Type" 1992 and the GBATEK
+// "DS Sound Notes" §"ADPCM"). Identical across every DS/GBA emulator
+// — DeSmuME (src/SPU.cpp), melonDS (src/SPU.cpp), and NocashGBA all
+// use this table verbatim, so we know retail decoded output matches.
+const ADPCM_STEP_TABLE: ReadonlyArray<number> = [
+  7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19, 21, 23, 25, 28, 31,
+  34, 37, 41, 45, 50, 55, 60, 66, 73, 80, 88, 97, 107, 118,
+  130, 143, 157, 173, 190, 209, 230, 253, 279, 307, 337, 371,
+  408, 449, 494, 544, 598, 658, 724, 796, 876, 963, 1060, 1166,
+  1282, 1411, 1552, 1707, 1878, 2066, 2272, 2499, 2749, 3024,
+  3327, 3660, 4026, 4428, 4871, 5358, 5894, 6484, 7132, 7845,
+  8630, 9493, 10442, 11487, 12635, 13899, 15289, 16818, 18500,
+  20350, 22385, 24623, 27086, 29794, 32767,
+];
+const ADPCM_INDEX_TABLE: ReadonlyArray<number> = [
+  -1, -1, -1, -1, 2, 4, 6, 8,
+  -1, -1, -1, -1, 2, 4, 6, 8,
+];
+
 interface Channel {
   cnt: number;        // 32-bit SOUND_CNT — bit 31 = key on/busy
   sad: number;        // 32-bit source address
@@ -46,6 +66,12 @@ interface Channel {
   // halfword index). Advanced by mix() according to the ratio of the
   // channel's NDS sample rate to the audio output rate.
   posFrac: number;
+  // IMA-ADPCM decoder state. Reset on key-on from the 4-byte header
+  // at SAD. We carry these forward sample-by-sample so the predictor
+  // converges naturally — you cannot random-access an ADPCM stream.
+  adpcmPredictor: number;      // signed 16-bit
+  adpcmStepIndex: number;      // 0..88
+  adpcmLastDecodedPos: number; // index of the last sample we resolved (-1 = need re-prime)
 }
 
 // Minimal memory accessor the mixer needs. We only support reading
@@ -61,6 +87,7 @@ export interface SoundMemory {
 export class Sound {
   channels: Channel[] = Array.from({ length: NUM_CHANNELS }, () => ({
     cnt: 0, sad: 0, tmr: 0, pnt: 0, len: 0, cyclesLeft: 0, posFrac: 0,
+    adpcmPredictor: 0, adpcmStepIndex: 0, adpcmLastDecodedPos: -1,
   }));
   soundcnt = 0;
   soundbias = 0x200;       // default mid-rail
@@ -130,6 +157,11 @@ export class Sound {
         // Restart the mixer cursor at the beginning of the sample so
         // we don't leak position state across key-on cycles.
         c.posFrac = 0;
+        // Reset the ADPCM decoder so the next fetchSample() re-primes
+        // from the 4-byte header at SAD. Harmless for PCM formats.
+        c.adpcmPredictor = 0;
+        c.adpcmStepIndex = 0;
+        c.adpcmLastDecodedPos = -1;
       }
       return;
     }
@@ -239,8 +271,74 @@ export class Sound {
       const s = u < 0x8000 ? u : u - 0x10000;
       return s / 32768;
     }
-    // PSG-pulse and IMA-ADPCM not yet implemented — emit silence.
+    if (fmt === FMT_ADPCM) {
+      return this.decodeAdpcmSample(c, pos);
+    }
+    // PSG-pulse not yet implemented — emit silence.
     return 0;
+  }
+
+  // Decode the IMA-ADPCM sample at `sampleIdx` (0-based, after the
+  // 4-byte header). The decoder is inherently sequential — sample N
+  // depends on sample N-1's predictor/stepIndex — so we walk forward
+  // from `adpcmLastDecodedPos+1` through `sampleIdx`, mutating the
+  // channel's stored decoder state. When the requested index is
+  // behind the cursor (loop wrap, key-on edge), we re-prime from the
+  // header at SAD and walk from sample 0.
+  //
+  // Hot path: no allocations, only integer math + one table lookup
+  // per intermediate sample. Called once per output sample for every
+  // active ADPCM channel.
+  private decodeAdpcmSample(c: Channel, sampleIdx: number): number {
+    const r0 = this.resolveSampleByte(c.sad >>> 0);
+    if (!r0) return 0;
+    if (sampleIdx <= c.adpcmLastDecodedPos || c.adpcmLastDecodedPos < 0) {
+      // Re-prime from the 4-byte header. Predictor is a signed 16-bit
+      // value in the low halfword; step index is in the high byte, &
+      // 0x7F per GBATEK (top bit is "loop info" — we ignore it here
+      // and clamp to the 0..88 valid range).
+      const bytes = r0.bytes;
+      const off = r0.offset;
+      const lo = bytes[off];
+      const hi = bytes[off + 1];
+      const u = (lo | (hi << 8)) & 0xFFFF;
+      c.adpcmPredictor = u < 0x8000 ? u : u - 0x10000;
+      let si = bytes[off + 2] & 0x7F;
+      if (si > 88) si = 88;
+      c.adpcmStepIndex = si;
+      c.adpcmLastDecodedPos = -1;
+    }
+    // Advance the decoder from one past the last-decoded sample
+    // through `sampleIdx`. Each step reads one nibble; the first
+    // nibble of each byte is the LOW nibble. We index source bytes
+    // as `sad + 4 + floor(n / 2)`.
+    const bytes = r0.bytes;
+    const baseOffset = r0.offset + 4;
+    let predictor = c.adpcmPredictor;
+    let stepIndex = c.adpcmStepIndex;
+    for (let n = c.adpcmLastDecodedPos + 1; n <= sampleIdx; n++) {
+      const byteOff = baseOffset + (n >> 1);
+      // Guard against running off the end of the resolved buffer
+      // (out-of-bounds reads return 0, which is a valid nibble byte).
+      const b = byteOff < bytes.length ? bytes[byteOff] : 0;
+      const nibble = (n & 1) === 0 ? (b & 0xF) : ((b >> 4) & 0xF);
+      const step = ADPCM_STEP_TABLE[stepIndex];
+      let diff = step >> 3;
+      if (nibble & 1) diff += step >> 2;
+      if (nibble & 2) diff += step >> 1;
+      if (nibble & 4) diff += step;
+      if (nibble & 8) diff = -diff;
+      predictor += diff;
+      if (predictor >  32767) predictor =  32767;
+      else if (predictor < -32768) predictor = -32768;
+      stepIndex += ADPCM_INDEX_TABLE[nibble];
+      if (stepIndex < 0) stepIndex = 0;
+      else if (stepIndex > 88) stepIndex = 88;
+    }
+    c.adpcmPredictor = predictor;
+    c.adpcmStepIndex = stepIndex;
+    c.adpcmLastDecodedPos = sampleIdx;
+    return predictor / 32768;
   }
 
   // Total number of *source* samples in the channel (i.e. how far the
@@ -251,6 +349,14 @@ export class Sound {
     const fmt = (c.cnt >> 29) & 0x3;
     if (fmt === FMT_PCM8)  return (c.len >>> 0) * 2;
     if (fmt === FMT_PCM16) return (c.len >>> 0);
+    if (fmt === FMT_ADPCM) {
+      // len is in halfwords. Each halfword = 4 nibbles = 4 samples,
+      // minus the 4-byte (= 8 nibble) header that doesn't carry
+      // payload samples. Floor at 0 so a degenerate len doesn't
+      // produce a negative count.
+      const n = ((c.len >>> 0) * 4) - 8;
+      return n > 0 ? n : 0;
+    }
     return 0;
   }
 
@@ -260,6 +366,14 @@ export class Sound {
     // SOUND_PNT is in halfwords; convert to bytes for PCM8.
     if (fmt === FMT_PCM8)  return (c.pnt & 0xFFFF) * 2;
     if (fmt === FMT_PCM16) return (c.pnt & 0xFFFF);
+    if (fmt === FMT_ADPCM) {
+      // pnt is in halfwords from start; each halfword after the
+      // 4-byte header is 4 nibble samples. We treat pnt as a
+      // halfword offset into the payload, so the sample-space
+      // loop-point is pnt*4. (The header lives in the first 2
+      // halfwords, so games typically use pnt >= 2.)
+      return (c.pnt & 0xFFFF) * 4;
+    }
     return 0;
   }
 
@@ -285,9 +399,10 @@ export class Sound {
       const c = this.channels[i];
       if ((c.cnt >>> 31) === 0) continue;       // not playing
       const fmt = (c.cnt >> 29) & 0x3;
-      // Skip unimplemented formats — leaves them at the silent
-      // placeholder so they don't waste cycles in the inner loop.
-      if (fmt === FMT_PSG || fmt === FMT_ADPCM) continue;
+      // PSG (square-wave) decoder isn't implemented yet — skip those
+      // channels so we don't waste inner-loop cycles. ADPCM is wired
+      // through fetchSample() below.
+      if (fmt === FMT_PSG) continue;
       const period = (0x10000 - (c.tmr & 0xFFFF)) || 1;
       const chanRate = NDS_SOUND_CLOCK / period;
       // Source samples to advance per output sample.
