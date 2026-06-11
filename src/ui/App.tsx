@@ -335,6 +335,11 @@ export function PlayerPage() {
   // handler (browser autoplay policy). We mark it on, and the first
   // pointer/key event anywhere on the page triggers startAudio().
   const [audioOn, setAudioOn] = useState(true);
+  // JIT toggle. OFF by default — the WASM Thumb recompiler is opt-in
+  // until more retail games have validated against it. Once enabled it
+  // stays on for the lifetime of the Emulator instance (cache survives
+  // ROM switches via Emulator.reset()).
+  const [jitOn, setJitOn] = useState(false);
   const audioStartedRef = useRef(false);
   useEffect(() => {
     if (!audioOn || audioStartedRef.current) return;
@@ -659,6 +664,25 @@ export function PlayerPage() {
             {audioOn ? '🔊 Audio' : '🔇 Audio'}
           </button>
           <button
+            className={`px-4 py-2 rounded text-white text-sm font-semibold border ${
+              jitOn
+                ? 'bg-fuchsia-700 hover:bg-fuchsia-600 border-fuchsia-400'
+                : 'bg-zinc-700 hover:bg-zinc-600 border-zinc-500'
+            }`}
+            title="WASM Thumb basic-block JIT for ARM9. ~3.5× speedup on hot loops. Cache survives ROM switches; toggling off doesn't drop the cache, just disables dispatch."
+            onClick={() => {
+              if (!jitOn) {
+                emu.enableJit();
+                if (emu.cpu9.recomp) emu.cpu9.recomp.enabled = true;
+              } else if (emu.cpu9.recomp) {
+                emu.cpu9.recomp.enabled = false;
+              }
+              setJitOn((v) => !v);
+            }}
+          >
+            ⚡ JIT {jitOn ? 'on' : 'off'}
+          </button>
+          <button
             className="px-4 py-2 rounded bg-indigo-700 hover:bg-indigo-600 text-white text-sm border border-indigo-500"
             title="Inject a tile-BG test pattern (verifies the 2D renderer end-to-end)"
             onClick={() => {
@@ -932,6 +956,19 @@ function DebugLog({ emu }: { emu: Emulator }) {
               ))}
               {activeSnd.length > 8 && <div className="text-zinc-500">…+{activeSnd.length - 8} more</div>}
             </div>
+          )}
+        </div>
+        <div>
+          <div className="text-zinc-500">JIT</div>
+          {emu.cpu9.recomp ? (
+            <div className="text-zinc-400">
+              {emu.cpu9.recomp.enabled ? 'on' : 'off (cache kept)'} ·{' '}
+              {emu.cpu9.recomp.cache.size} blocks ·{' '}
+              {emu.cpu9.recomp.jitInsns.toLocaleString()} jit insns ·{' '}
+              {emu.cpu9.recomp.intInsns.toLocaleString()} interp
+            </div>
+          ) : (
+            <div className="text-zinc-400">disabled (interpreter only)</div>
           )}
         </div>
         <div>
