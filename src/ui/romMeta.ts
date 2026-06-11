@@ -211,10 +211,11 @@ export const ROM_LIBRARY: RomMeta[] = [
     path: '/Tetris DS.nds',
     label: 'Tetris DS',
     kind: 'retail',
-    tier: '🔴',
-    blurb: 'Reaches an explicit SDK OS_Panic / B-self loop at 0x02026F54.',
+    tier: '🟡',
+    blurb: 'Past the SDK B-self trap at 0x02026F54 (game-coded ATRE bypass). Engine B displays enabled, VRAM/palette populated; stalls at a downstream WMi waitloop.',
     issues: [
-      'A downstream validation check fails after our SNDi PXI fix advanced it past the original SNDi loop.',
+      'B-self trap at 0x02026F54 is bypassed via a one-shot main-RAM patch (src/cart/tetris_assist.ts).',
+      'Underlying cause: WMi (wireless manager) ARM7 worker is not modeled — the SDK probe at 0x0200F20C never settles. Tetris uses WiFi multiplayer; a full WMi stub would let the single-player path advance further.',
     ],
   },
   {

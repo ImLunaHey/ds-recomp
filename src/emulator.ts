@@ -12,6 +12,7 @@ import { parseNdsHeader, type NdsHeader } from './cart/header';
 import { Cart } from './cart/cart';
 import { loadAllOverlays, type OverlayLoadStats } from './cart/overlays';
 import { tryHandleNsmbFsThunk, NSMB_FS_THUNK_ADDR } from './cart/nsmb_fs_assist';
+import { applyTetrisPanicPatch } from './cart/tetris_assist';
 import { Cpu } from './cpu/cpu';
 import { Cp15 } from './cpu/cp15';
 import { Irq } from './io/irq';
@@ -244,6 +245,14 @@ export class Emulator {
     // Frame Counter — well-known BIOS-post-boot value used by some
     // early-SDK games as a "BIOS has finished" sanity check.
     writeRam(0x027FFC3C, 0x00000332, 32);
+    // Tetris DS (game code ATRE) lands in an SDK panic loop at
+    // 0x02026F54 after the WMi (wireless manager) ARM7-side worker
+    // probe fails — we don't model the WM subsystem, so the
+    // "ARM7 is idle and accepting commands" gate the SDK polls
+    // never settles to the expected value. Patches the B-self trap
+    // to forward into the success-path teardown so the game can
+    // proceed to its title screen. No-op for every other ROM.
+    applyTetrisPanicPatch(rom, this.mem.mainRam);
     this.resetCpus();
   }
 
